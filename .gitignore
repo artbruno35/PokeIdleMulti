@@ -1,0 +1,7 @@
+# Builds: o exe vai nas Releases. O zip do notebook leva os logins das contas: nunca no repositório.
+bin/
+obj/
+.vs/
+*.user
+*.exe
+*.zip

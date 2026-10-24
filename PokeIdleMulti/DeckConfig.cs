@@ -1,0 +1,145 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace PokeIdleMulti;
+
+internal enum DeckLayout { Grid, Columns, Focus }
+
+/// <summary>
+/// Como ficar nas lives da Twitch: <see cref="Presence"/> só entra nos chats (sem página, quase não
+/// gasta nada); <see cref="Chat"/> abre a página do chat de cada canal; <see cref="Live"/> abre a live inteira.
+/// </summary>
+internal enum TwitchMode { Presence, Chat, Live }
+
+/// <summary>Preferências do deck salvas entre uma execução e outra.</summary>
+internal sealed class DeckConfig
+{
+    private const int Accounts = 4;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    public string[] AccountNames { get; set; } = { "Conta 1", "Conta 2", "Conta 3", "Conta 4" };
+
+    public DeckLayout Layout { get; set; } = DeckLayout.Grid;
+
+    /// <summary>A conta ampliada no layout de foco.</summary>
+    public int Focused { get; set; }
+
+    /// <summary>Zoom da página de cada conta (Ctrl + roda do mouse).</summary>
+    public double[] Zoom { get; set; } = { 1, 1, 1, 1 };
+
+    public bool[] Muted { get; set; } = new bool[Accounts];
+
+    /// <summary>Contas desligadas no botão ⏻: ficam no deck, mas não abrem o jogo (nem extensões, lives e voto).</summary>
+    public bool[] Off { get; set; } = new bool[Accounts];
+
+    /// <summary>Posição e tamanho da janela quando não está maximizada: x, y, largura, altura.</summary>
+    public int[]? WindowBounds { get; set; }
+
+    public bool Maximized { get; set; } = true;
+
+    /// <summary>
+    /// Contas (1 a 4) que mantêm as lives abertas. O bônus só vale para a conta do jogo vinculada
+    /// à Twitch/Kick logada nas lives dela, então normalmente é só a main.
+    /// </summary>
+    public List<int> LivesAccounts { get; set; } = new() { 1 };
+
+    /// <summary>Streamers oficiais na Twitch (a lista do painel de bônus do jogo).</summary>
+    public List<string> TwitchChannels { get; set; } = new()
+    {
+        "tftoddy", "clovaobengala", "axtlol", "patopapao", "matta", "guaxilol1", "rodil",
+        "cogu", "luccatv", "faasii", "biscoitao", "techzz", "dersin2k", "denissnidertv",
+    };
+
+    /// <summary>O jogo confere quem está no chat: a presença basta e é de longe o mais leve.</summary>
+    public TwitchMode TwitchMode { get; set; } = TwitchMode.Presence;
+
+    /// <summary>
+    /// Streamers oficiais na Kick, em ordem de prioridade. Abre a live inteira, que é o que rende pontos
+    /// do canal, mas só das duas primeiras que estiverem no ar (<see cref="KickLive"/>).
+    /// </summary>
+    public List<string> KickChannels { get; set; } = new() { "biscoitao", "yetz", "surskity" };
+
+    /// <summary>O que o botão kick fechou em cada conta.</summary>
+    public KickLimit[] Kick { get; set; } = NewKick();
+
+    /// <summary>Da versão em que o kick só fechava a 2ª live: lido uma vez e convertido em <see cref="Kick"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool[]? KickSingle { get; set; }
+
+    /// <summary>As páginas da Twitch na janela de lives (na presença, a Twitch não precisa de página).</summary>
+    public IEnumerable<string> TwitchUrls() => TwitchMode switch
+    {
+        TwitchMode.Chat => TwitchChannels.Select(c => $"https://www.twitch.tv/popout/{c}/chat?popout="),
+        TwitchMode.Live => TwitchChannels.Select(c => $"https://www.twitch.tv/{c}"),
+        _ => Enumerable.Empty<string>(),
+    };
+
+    public static DeckConfig Load(string path)
+    {
+        DeckConfig config;
+        try
+        {
+            config = JsonSerializer.Deserialize<DeckConfig>(File.ReadAllText(path), JsonOptions) ?? new DeckConfig();
+        }
+        catch
+        {
+            config = new DeckConfig();
+        }
+
+        // Um arquivo editado à mão não pode deixar listas mais curtas que as 4 contas.
+        config.AccountNames = Fill(config.AccountNames, i => $"Conta {i + 1}");
+        config.Zoom = Fill(config.Zoom, _ => 1.0);
+        config.Muted = Fill(config.Muted, _ => false);
+        config.Off = Fill(config.Off, _ => false);
+        config.Kick = Fill(config.Kick, _ => new KickLimit())
+            .Select(k => k is { Closed: not null } ? k : new KickLimit()).ToArray();
+        foreach (var kick in config.Kick)
+            kick.Slots = Math.Clamp(kick.Slots, 0, KickLive.Slots);
+        for (int i = 0; i < Accounts && config.KickSingle is not null; i++)
+            if (i < config.KickSingle.Length && config.KickSingle[i])
+                config.Kick[i].Slots = Math.Min(config.Kick[i].Slots, 1);
+        config.KickSingle = null;
+        config.Focused = Math.Clamp(config.Focused, 0, Accounts - 1);
+        return config;
+    }
+
+    public void Save(string path)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+        }
+        catch
+        {
+            // Não conseguir salvar a preferência não pode derrubar o deck.
+        }
+    }
+
+    private static KickLimit[] NewKick() => Enumerable.Range(0, Accounts).Select(_ => new KickLimit()).ToArray();
+
+    private static T[] Fill<T>(T[]? values, Func<int, T> fallback) =>
+        Enumerable.Range(0, Accounts).Select(i => values is not null && i < values.Length ? values[i] : fallback(i)).ToArray();
+}
+
+/// <summary>As lives da Kick que o botão kick fechou numa conta.</summary>
+internal sealed class KickLimit
+{
+    /// <summary>
+    /// Quantas lives da Kick abrem nesta conta. Cada live fechada leva a vaga dela junto, para a conferência
+    /// de 2 em 2 min não abrir outra no lugar; 0 é "fechar todas".
+    /// </summary>
+    public int Slots { get; set; } = KickLive.Slots;
+
+    /// <summary>Os canais fechados: não abrem nesta conta até abrir de novo no kick.</summary>
+    public List<string> Closed { get; set; } = new();
+
+    /// <summary>Alguma live fechada no kick (o botão fica marcado).</summary>
+    [JsonIgnore]
+    public bool Limited => Slots < KickLive.Slots || Closed.Count > 0;
+}
