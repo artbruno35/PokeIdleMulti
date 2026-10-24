@@ -80,6 +80,9 @@ internal sealed class LivesWindow : Form
     {
         foreach (var page in _pages.Skip(_kickStart).Where(p => p.Kick is not null && p.Loaded).ToList())
         {
+            // A conta pode ter sido desligada (e a janela fechada) no meio da conferência.
+            if (IsDisposed)
+                return;
             string state;
             try
             {
