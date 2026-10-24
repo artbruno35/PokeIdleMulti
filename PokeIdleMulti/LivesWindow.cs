@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -27,7 +29,18 @@ internal sealed class LivesWindow : Form
         public string? Url { get; set; }
         public string? Kick { get; set; }
         public bool Loaded { get; set; }
+
+        /// <summary>Onde o vídeo estava na última conferência, e quantas seguidas ele não andou.</summary>
+        public double? VideoTime { get; set; }
+        public int Stalls { get; set; }
+        public bool? Playing { get; set; }
+        public int Reloads { get; set; }
     }
+
+    // Manda tocar se estiver pausado e diz onde o vídeo está ("sem" quando a página não tem vídeo).
+    private const string PlayScript =
+        "(() => { const v = document.querySelector('video'); if (!v) return 'sem'; " +
+        "if (v.paused) v.play().catch(() => {}); return [v.paused, v.readyState, v.currentTime].join(' '); })()";
 
     private LivesWindow(string accountName)
     {
@@ -52,6 +65,53 @@ internal sealed class LivesWindow : Form
 
     /// <summary>Os canais da Kick abertos agora.</summary>
     public IEnumerable<string> KickChannels => _pages.Skip(_kickStart).Select(p => p.Kick).OfType<string>();
+
+    /// <summary>Cada live da Kick aberta e se o vídeo dela está tocando (null: ainda não conferiu).</summary>
+    public IEnumerable<(string Channel, bool? Playing, int Reloads)> KickPlayback => _pages.Skip(_kickStart)
+        .Where(p => p.Kick is not null)
+        .Select(p => (p.Kick!, p.Playing, p.Reloads));
+
+    /// <summary>
+    /// Confere se o vídeo de cada live da Kick está andando, que é o que rende os pontos. Pausado: manda
+    /// tocar. Parado em duas conferências seguidas (travou, ou ficou preso na checagem do Cloudflare, que
+    /// ainda vai comendo memória): recarrega só aquela página.
+    /// </summary>
+    public async Task WatchKickAsync()
+    {
+        foreach (var page in _pages.Skip(_kickStart).Where(p => p.Kick is not null && p.Loaded).ToList())
+        {
+            string state;
+            try
+            {
+                state = JsonSerializer.Deserialize<string>(await page.View.ExecuteScriptAsync(PlayScript)) ?? "sem";
+            }
+            catch
+            {
+                state = "sem";
+            }
+            // "pausado prontidão tempo": andando = não pausado e o tempo passou desde a última conferência.
+            var parts = state.Split(' ');
+            bool moving = false;
+            if (parts.Length == 3 && parts[0] == "false"
+                && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double time))
+            {
+                moving = page.VideoTime is not double last || time > last;
+                page.VideoTime = time;
+            }
+            if (moving)
+            {
+                page.Stalls = 0;
+                page.Playing = true;
+                continue;
+            }
+            page.Playing = false;
+            if (++page.Stalls >= 2)
+            {
+                page.Reloads++;
+                Navigate(page, page.Url, page.Kick);
+            }
+        }
+    }
 
     /// <summary>As abas da Kick abertas (onde ficam o chat e o resgate dos pontos do canal).</summary>
     public IEnumerable<(int Tab, string Name)> KickTabs => _pages
@@ -191,15 +251,22 @@ internal sealed class LivesWindow : Form
         core.NewWindowRequested += (_, e) => PopupWindow.HandleNewWindow(env, profile, this, e);
         // Vídeo na menor qualidade: continua contando como assistindo, gastando bem menos.
         VideoQuality.LimitToLowest(env, core);
+        AdBlock.Apply(env, core);
         setup?.Invoke(core);
         return page;
     }
 
     private void Navigate(Page page, string? url, string? kick)
     {
+        // Outra live na vaga começa a conferência do zero (recarregar a mesma mantém a contagem).
+        if (kick != page.Kick)
+            page.Reloads = 0;
         page.Url = url;
         page.Kick = kick;
         page.Loaded = false;
+        page.VideoTime = null;
+        page.Stalls = 0;
+        page.Playing = null;
         page.Button.Text = url is null ? "" : TabName(url);
         page.Button.Visible = url is not null;
         page.View.CoreWebView2?.Navigate(url ?? "about:blank");

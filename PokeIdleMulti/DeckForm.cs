@@ -71,6 +71,7 @@ internal sealed class DeckForm : Form
     private FormWindowState _restoreState;
     private Rectangle _restoreBounds;
     private int _seconds;
+    private bool _memoryBusy;
 
     public DeckForm(bool selfTest)
     {
@@ -193,6 +194,7 @@ internal sealed class DeckForm : Form
     {
         Theme.Style(_status);
         _status.SizingGrip = false;
+        _status.ShowItemToolTips = true;
         _ram.ForeColor = Theme.Muted;
         _livesStatus.ForeColor = Theme.Muted;
         _status.Items.Add(_ram);
@@ -515,8 +517,11 @@ internal sealed class DeckForm : Form
         {
             var kick = window.KickChannels.ToList();
             var shut = KickShut(index);
+            // ▶ tocando, ⏸ parada (o deck manda tocar e, se continuar, recarrega: ⟳ quantas vezes).
+            var playback = window.KickPlayback.Select(k => k.Channel
+                + (k.Playing == true ? " ▶" : k.Playing == false ? " ⏸" : "") + (k.Reloads > 0 ? $" ⟳{k.Reloads}" : ""));
             if (_config.KickChannels.Count > 0)
-                parts.Add(kick.Count > 0 ? "Kick no ar: " + string.Join(", ", kick)
+                parts.Add(kick.Count > 0 ? "Kick no ar: " + string.Join(", ", playback)
                     : _config.Kick[index].Slots == 0 ? "Kick: todas fechadas no kick"
                     : _kickLive.Count == 0 ? "Kick: conferindo quem está no ar…"
                     : "Kick: nenhuma live da lista no ar");
@@ -535,7 +540,7 @@ internal sealed class DeckForm : Form
         foreach (var pane in _panes)
             pane.RefreshHeader();
         if (_seconds++ % 3 == 0)
-            UpdateMemory();
+            _ = UpdateMemoryAsync();
         if (_seconds % 5 == 0)
         {
             foreach (var window in _lives.OfType<LivesWindow>())
@@ -547,34 +552,58 @@ internal sealed class DeckForm : Form
         UpdateVotes();
     }
 
-    private void UpdateMemory()
+    /// <summary>
+    /// A RAM do navegador embutido, separada em o jogo das contas, as lives e o resto (o próprio navegador,
+    /// a placa de vídeo, as extensões). É a memória privada de cada processo, a que pesa no PC.
+    /// </summary>
+    private async Task UpdateMemoryAsync()
     {
-        if (_env is null)
+        if (_env is null || _memoryBusy)
             return;
-        long bytes = 0;
-        int count = 0;
+        _memoryBusy = true;
         try
         {
-            foreach (var info in _env.GetProcessInfos())
+            long game = 0, lives = 0, other = 0;
+            int count = 0;
+            foreach (var info in await _env.GetProcessExtendedInfosAsync())
             {
+                long bytes;
                 try
                 {
-                    using var process = Process.GetProcessById(info.ProcessId);
-                    bytes += process.WorkingSet64;
-                    count++;
+                    using var process = Process.GetProcessById(info.ProcessInfo.ProcessId);
+                    bytes = process.PrivateMemorySize64;
                 }
                 catch (ArgumentException)
                 {
                     // O processo acabou de fechar.
+                    continue;
                 }
+                count++;
+                // Cada página roda num processo; o que ele mostra diz de quem é.
+                var hosts = info.AssociatedFrameInfos
+                    .Select(f => Uri.TryCreate(f.Source, UriKind.Absolute, out var uri) ? uri.Host : "").ToList();
+                if (hosts.Any(h => h.EndsWith("pokeidle.io")))
+                    game += bytes;
+                else if (hosts.Any(h => h.EndsWith("kick.com") || h.EndsWith("twitch.tv") || h.EndsWith("cloudflare.com")))
+                    lives += bytes;
+                else
+                    other += bytes;
             }
+            _ram.Text = $"RAM ~{Gb(game + lives + other)} GB: jogo {Gb(game)} · lives {Gb(lives)} · navegador {Gb(other)}";
+            _ram.ToolTipText = $"{count} processos do navegador embutido (memória privada, a que pesa no PC).\n" +
+                               "Para aliviar: feche lives da Kick no botão kick de cada conta, ou desligue no ⏻ as contas que não está usando.";
         }
         catch
         {
-            return;
+            // O deck está fechando ou o navegador caiu: fica o último valor.
         }
-        _ram.Text = $"RAM ~{bytes / 1024d / 1024 / 1024:0.0} GB em {count} processos do navegador";
+        finally
+        {
+            _memoryBusy = false;
+        }
     }
+
+    private static string Gb(long bytes) => (bytes / 1024d / 1024 / 1024).ToString("0.0");
 
     // ---------- Ações das contas ----------
 
@@ -1088,6 +1117,11 @@ internal sealed class DeckForm : Form
             _kickChecking = false;
         }
         ApplyKick();
+        // E se as lives abertas estão mesmo tocando (vídeo parado não rende pontos).
+        foreach (var window in _lives.OfType<LivesWindow>().ToList())
+            if (!window.IsDisposed)
+                await window.WatchKickAsync();
+        UpdateBar();
     }
 
     /// <summary>Deixa abertas, em cada janela de lives, só as lives da Kick que estão no ar (até duas).</summary>
@@ -1281,7 +1315,12 @@ internal sealed class DeckForm : Form
             "<button onclick='window.__mapa = (window.__mapa || 0) + 1'>Mapa</button> " +
             "<button onclick='window.__outro = (window.__outro || 0) + 1'>Outro</button></nav></body>");
         File.WriteAllText(Path.Combine(site, "twitch.html"), "<!doctype html><title>Twitch-teste</title>");
-        File.WriteAllText(Path.Combine(site, "kick.html"), "<!doctype html><title>Kick-teste</title>");
+        // Live de teste com vídeo "tocando" (o tempo anda); a do yetz fica parada, sem vídeo para tocar.
+        File.WriteAllText(Path.Combine(site, "kick.html"),
+            "<!doctype html><title>Kick-teste</title><video muted></video><script>" +
+            "if (!location.search.includes('yetz')) { const v = document.querySelector('video');" +
+            " Object.defineProperty(v, 'paused', { get: () => false });" +
+            " Object.defineProperty(v, 'currentTime', { get: () => performance.now() / 1000 }); }</script>");
 
         var extension = Path.Combine(_root, "ext-teste");
         Directory.CreateDirectory(extension);
@@ -1501,6 +1540,19 @@ internal sealed class DeckForm : Form
             Check("todas as páginas das lives visíveis para o navegador (vídeo de trás toca)",
                 visibility.Count == 3 && visibility.All(v => v == "\"visible\""), string.Join(", ", visibility));
 
+            // Propaganda cortada nas lives: o pedido a um site de anúncio volta 403 do próprio deck.
+            if (lives0 is not null)
+                await lives0.EvalAsync("window.__ads = 'pendente'; fetch('https://pagead2.googlesyndication.com/deck-teste')" +
+                                       ".then(r => window.__ads = r.status, () => window.__ads = 'erro'); 1");
+            await Task.Delay(1500);
+            var ads = lives0 is null ? new List<string>() : await lives0.EvalAsync("window.__ads");
+            Check("lives sem propaganda (anúncio bloqueado; vídeo, Kick e Cloudflare passam)",
+                ads.Count == 3 && ads.All(a => a == "403")
+                && AdBlock.Blocked("https://pagead2.googlesyndication.com/x") && AdBlock.Blocked("https://js.stripe.com/v3")
+                && !AdBlock.Blocked("https://kick.com/biscoitao") && !AdBlock.Blocked("https://abc.playback.live-video.net/api/video/v1/x.m3u8")
+                && !AdBlock.Blocked("https://challenges.cloudflare.com/x") && !AdBlock.Blocked("https://notgooglesyndication.com/"),
+                string.Join(",", ads));
+
             Check("Kick: abre só as 2 primeiras da lista que estão no ar",
                 KickLive.Pick(new[] { "biscoitao", "axt", "clovao", "outro" },
                     new Dictionary<string, bool?> { ["biscoitao"] = false, ["axt"] = true, ["clovao"] = true, ["outro"] = true })
@@ -1562,6 +1614,19 @@ internal sealed class DeckForm : Form
             Check("kick: abrir todas de novo volta às 2 primeiras da lista no ar",
                 reopened && _panes[0].KickState == "ligado" && !_config.Kick[0].Limited,
                 $"Kick={KickNow()} botão={_panes[0].KickState}");
+
+            // Conferência das lives tocando: a do biscoitao anda (▶); a do yetz fica parada (a 1ª conferência
+            // só anota onde o vídeo está) e, depois de duas paradas seguidas, é recarregada (⟳1).
+            if (lives0 is not null)
+                for (int i = 0; i < 3; i++)
+                    await lives0.WatchKickAsync();
+            var playback = lives0?.KickPlayback.ToDictionary(k => k.Channel) ?? new();
+            string summary = LivesSummary(0);
+            Check("lives da Kick: confere se o vídeo toca e recarrega a que travou",
+                playback.TryGetValue("biscoitao", out var bisc) && bisc.Playing == true && bisc.Reloads == 0
+                && playback.TryGetValue("yetz", out var yetz) && yetz.Reloads == 1
+                && summary.Contains("biscoitao ▶") && summary.Contains("yetz ⟳1"),
+                summary);
             _kickLive.Clear();
 
             // deck.json da versão em que o kick só fechava a 2ª: vira 1 vaga, e o campo velho some ao salvar.
@@ -1662,6 +1727,8 @@ internal sealed class DeckForm : Form
             ToggleFullscreen();
             await Task.Delay(800);
             Check("sair da tela cheia volta como estava", Bounds == windowed && FormBorderStyle == FormBorderStyle.Sizable, $"{Bounds} antes {windowed}");
+            Check("RAM na barra separada em jogo, lives e navegador",
+                _ram.Text?.StartsWith("RAM ~") == true && _ram.Text.Contains(" jogo ") && _ram.Text.Contains(" lives "), _ram.Text ?? "");
         }
         catch (Exception ex)
         {

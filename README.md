@@ -11,7 +11,8 @@ extensões separados.
 
 - Grade 2×2, colunas ou uma conta ampliada; tela cheia no F11.
 - Cabeçalho de cada conta: ⏻ desligar, ⛶ ampliar, ⟳ recarregar, 🔊 som, **kick** (escolher qual live da Kick fechar, ou todas), 🗳 voto no TopIdle e os botões das extensões.
-- Lives para o bônus de XP: presença nos chats da Twitch e as 2 primeiras lives da Kick da lista que estão no ar (vídeo na menor qualidade), numa janela fora da tela.
+- Lives para o bônus de XP: presença nos chats da Twitch e as 2 primeiras lives da Kick da lista que estão no ar (vídeo na menor qualidade, sem propaganda nem rastreadores), numa janela fora da tela. A cada 2 min o deck confere se o vídeo de cada live está tocando (▶ na barra de baixo) e recarrega a que travou (⟳).
+- Barra de baixo: a RAM separada em jogo · lives · navegador, para ver o que está pesando.
 - 🔁 Eco (um clique numa conta se repete nas outras), 🎯 liga/desliga do Rotom Sniper, 🧩 extensões por conta.
 
 ### Baixar e abrir (outro PC)
