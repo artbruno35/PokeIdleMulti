@@ -16,6 +16,10 @@ internal sealed class TwitchPresence : IDisposable
     // A Twitch aceita 20 entradas em canais a cada 10 s.
     private const int JoinBatch = 15;
 
+    // A Twitch manda PING a cada ~5 min. Conexão que morreu calada (o Wi-Fi trocou, o notebook dormiu)
+    // não avisa nada: tanto tempo sem chegar coisa nenhuma é conexão morta, e aí conecta de novo.
+    private static readonly TimeSpan Silence = TimeSpan.FromMinutes(7);
+
     private readonly Func<Task<(string? Token, string? Login)>> _readLogin;
     private readonly List<string> _channels;
     private readonly CancellationTokenSource _stop = new();
@@ -137,9 +141,19 @@ internal sealed class TwitchPresence : IDisposable
 
         var buffer = new byte[16 * 1024];
         var pending = new StringBuilder();
+        using var silence = CancellationTokenSource.CreateLinkedTokenSource(stop);
         while (socket.State == WebSocketState.Open)
         {
-            var result = await socket.ReceiveAsync(buffer, stop);
+            WebSocketReceiveResult result;
+            silence.CancelAfter(Silence);
+            try
+            {
+                result = await socket.ReceiveAsync(buffer, silence.Token);
+            }
+            catch (OperationCanceledException) when (!stop.IsCancellationRequested)
+            {
+                return;
+            }
             if (result.MessageType == WebSocketMessageType.Close)
                 return;
             pending.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));

@@ -10,6 +10,8 @@ namespace PokeIdleMulti;
 /// Twitch/Kick). As páginas ficam empilhadas, todas visíveis para o navegador: página escondida (como
 /// a aba de trás de um TabControl) não toca o vídeo, e a Kick só dá pontos com a live tocando. Por isso
 /// a janela fica aberta fora da tela; "Mostrar" traz ela para perto do deck e fechar devolve para fora.
+/// Na tela, as lives da Kick aparecem só como colunas de chat lado a lado, da altura da tela: o chat e o
+/// botão dos pontos, que é o que se usa ali. O vídeo continua na página, fora da vista, tocando.
 /// </summary>
 internal sealed class LivesWindow : Form
 {
@@ -18,14 +20,33 @@ internal sealed class LivesWindow : Form
     private readonly ToolStrip _bar = new ClickThroughToolStrip { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden };
     private readonly Panel _stack = new() { Dock = DockStyle.Fill };
     private readonly List<Page> _pages = new();
+    private readonly ToolStripButton _fullPage = new("Página inteira")
+    {
+        Alignment = ToolStripItemAlignment.Right, CheckOnClick = true, Visible = false,
+        ToolTipText = "Mostra a página toda da live (com o vídeo), se algo do chat ficar cortado",
+    };
+    private readonly ToolStripButton _next = new("Próxima conta ▶") { Alignment = ToolStripItemAlignment.Right, Visible = false };
     private int _kickStart;
+    private int _selected;
+    private int _order;
     private bool _revealed;
+
+    // A página da Kick é desenhada na largura de computador, que põe o chat numa lateral de 340 px à direita
+    // com o botão dos pontos embaixo (na largura de celular esse botão some). Na coluna de cada live aparece
+    // só essa lateral; o resto da página, com o vídeo, fica à esquerda, fora da vista.
+    private const int PageWidth = 1100;
+    private const int ChatWidth = 340;
 
     /// <summary>Uma página da janela; uma vaga da Kick sem live no ar fica em branco (<see cref="Url"/> nulo).</summary>
     private sealed class Page
     {
         public required WebView2 View { get; init; }
+
+        /// <summary>O pedaço da janela onde a página aparece (a da Kick passa dele para a esquerda).</summary>
+        public required Panel Frame { get; init; }
+
         public required ToolStripButton Button { get; init; }
+        public bool IsKick { get; init; }
         public string? Url { get; set; }
         public string? Kick { get; set; }
         public bool Loaded { get; set; }
@@ -35,12 +56,25 @@ internal sealed class LivesWindow : Form
         public int Stalls { get; set; }
         public bool? Playing { get; set; }
         public int Reloads { get; set; }
+
+        /// <summary>Recarregadas seguidas sem o vídeo voltar a andar (cada uma espera o dobro para a próxima).</summary>
+        public int Retries { get; set; }
     }
 
     // Manda tocar se estiver pausado e diz onde o vídeo está ("sem" quando a página não tem vídeo).
     private const string PlayScript =
         "(() => { const v = document.querySelector('video'); if (!v) return 'sem'; " +
         "if (v.paused) v.play().catch(() => {}); return [v.paused, v.readyState, v.currentTime].join(' '); })()";
+
+    // Página travada não responde ao script; passado isso, conta como parada.
+    private static readonly TimeSpan ScriptTimeout = TimeSpan.FromSeconds(10);
+
+    // Fora da tela ninguém lê o chat da Kick, e escondido ele não é desenhado: a live gasta quase metade da
+    // CPU. Mostrar a janela (para resgatar os pontos) traz o chat de volta.
+    private static string ChatScript(bool show) =>
+        "(() => { let s = document.getElementById('deck-sem-chat'); if (!s) { s = document.createElement('style'); " +
+        "s.id = 'deck-sem-chat'; s.textContent = '#channel-chatroom, #chatroom { display: none !important; }'; " +
+        $"(document.head || document.documentElement).appendChild(s); }} s.media = '{(show ? "not all" : "all")}'; return 1; }})()";
 
     private LivesWindow(string accountName)
     {
@@ -50,8 +84,27 @@ internal sealed class LivesWindow : Form
         ShowInTaskbar = false;
         Size = new Size(1100, 760);
         Theme.Style(_bar);
+        _bar.Items.Add(_next);
+        _bar.Items.Add(_fullPage);
+        _fullPage.CheckedChanged += (_, _) =>
+        {
+            Arrange();
+            Fit();
+        };
+        _next.Click += (_, _) => NextRequested?.Invoke();
+        _stack.Resize += (_, _) => Arrange();
         Controls.Add(_stack);
         Controls.Add(_bar);
+    }
+
+    /// <summary>Pediu para ir à conta seguinte (o deck tira esta da tela e mostra a próxima).</summary>
+    public event Action? NextRequested;
+
+    /// <summary>Mostra o botão "Próxima conta" (há mais de uma conta com live da Kick).</summary>
+    public bool HasNext
+    {
+        get => _next.Visible;
+        set => _next.Visible = value;
     }
 
     /// <summary>Fechar de verdade (ao desligar as lives ou fechar o deck); senão o X só tira da tela.</summary>
@@ -73,27 +126,20 @@ internal sealed class LivesWindow : Form
 
     /// <summary>
     /// Confere se o vídeo de cada live da Kick está andando, que é o que rende os pontos. Pausado: manda
-    /// tocar. Parado em duas conferências seguidas (travou, ou ficou preso na checagem do Cloudflare, que
-    /// ainda vai comendo memória): recarrega só aquela página.
+    /// tocar. Parado em duas conferências seguidas (travou, a live caiu e voltou, a página não carregou por
+    /// falta de internet, ou ficou presa na checagem do Cloudflare, que ainda vai comendo memória):
+    /// recarrega só aquela página. Se continuar sem voltar, espera o dobro antes de cada nova tentativa
+    /// (1, 2 e depois 4 min).
     /// </summary>
     public async Task WatchKickAsync()
     {
-        foreach (var page in _pages.Skip(_kickStart).Where(p => p.Kick is not null && p.Loaded).ToList())
+        foreach (var page in _pages.Skip(_kickStart).Where(p => p.Kick is not null).ToList())
         {
             // A conta pode ter sido desligada (e a janela fechada) no meio da conferência.
             if (IsDisposed)
                 return;
-            string state;
-            try
-            {
-                state = JsonSerializer.Deserialize<string>(await page.View.ExecuteScriptAsync(PlayScript)) ?? "sem";
-            }
-            catch
-            {
-                state = "sem";
-            }
             // "pausado prontidão tempo": andando = não pausado e o tempo passou desde a última conferência.
-            var parts = state.Split(' ');
+            var parts = (page.Loaded ? await PlaybackAsync(page) : "carregando").Split(' ');
             bool moving = false;
             if (parts.Length == 3 && parts[0] == "false"
                 && double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double time))
@@ -104,15 +150,32 @@ internal sealed class LivesWindow : Form
             if (moving)
             {
                 page.Stalls = 0;
+                page.Retries = 0;
                 page.Playing = true;
                 continue;
             }
             page.Playing = false;
-            if (++page.Stalls >= 2)
+            if (++page.Stalls >= 2 << Math.Min(page.Retries, 2))
             {
                 page.Reloads++;
+                page.Retries++;
                 Navigate(page, page.Url, page.Kick);
             }
+        }
+    }
+
+    private static async Task<string> PlaybackAsync(Page page)
+    {
+        try
+        {
+            var script = page.View.ExecuteScriptAsync(PlayScript);
+            if (await Task.WhenAny(script, Task.Delay(ScriptTimeout)) != script)
+                return "travada";
+            return JsonSerializer.Deserialize<string>(await script) ?? "sem";
+        }
+        catch
+        {
+            return "sem";
         }
     }
 
@@ -133,10 +196,10 @@ internal sealed class LivesWindow : Form
         window.Park();
         window.Show();
         foreach (var url in urls)
-            window.Navigate(await window.AddPageAsync(env, profile, setup), url, null);
+            window.Navigate(await window.AddPageAsync(env, profile, setup, kick: false), url, null);
         window._kickStart = window._pages.Count;
         for (int i = 0; i < kickSlots; i++)
-            await window.AddPageAsync(env, profile, setup);
+            await window.AddPageAsync(env, profile, setup, kick: true);
         if (window._pages.Count > 0)
             window.Select(0);
         return window;
@@ -154,21 +217,42 @@ internal sealed class LivesWindow : Form
             Navigate(slot, null, null);
         foreach (var (channel, url) in wanted.Where(w => !slots.Any(s => s.Kick == w.Channel)))
             Navigate(slots.First(s => s.Kick is null), url, channel);
+        Arrange();
+        Fit();
     }
 
-    /// <summary>Traz a janela para o meio de <paramref name="area"/>, já na aba pedida.</summary>
-    public void Reveal(Rectangle area, int tab = -1)
+    /// <summary>
+    /// Traz a janela para <paramref name="area"/>, da altura dela e já na aba pedida (numa da Kick: as
+    /// colunas de chat). <paramref name="order"/> desloca cada conta um pouco, quando várias aparecem juntas.
+    /// </summary>
+    public void Reveal(Rectangle area, int tab = -1, int order = 0)
     {
-        if (tab >= 0)
-            Select(tab);
-        else if (_pages.FirstOrDefault(p => p.Url is not null) is Page first)
-            Select(_pages.IndexOf(first));
         _revealed = true;
+        _order = order;
+        _fullPage.Checked = false;
+        ApplyChat();
         if (WindowState == FormWindowState.Minimized)
             WindowState = FormWindowState.Normal;
-        Location = new Point(area.X + Math.Max(0, (area.Width - Width) / 2), area.Y + Math.Max(0, (area.Height - Height) / 2));
+        // Primeiro para a tela certa (lá a escala pode ser outra), depois do tamanho dela.
+        Location = area.Location;
+        Select(tab >= 0 ? tab : Math.Max(0, _pages.FindIndex(p => p.Url is not null)));
         Activate();
     }
+
+    /// <summary>Tira da tela (continua rodando).</summary>
+    public void Park()
+    {
+        _revealed = false;
+        ApplyChat();
+        WindowState = FormWindowState.Normal;
+        var screens = SystemInformation.VirtualScreen;
+        Location = new Point(screens.Right + 100, screens.Top);
+    }
+
+    /// <summary>Onde está cada coluna da Kick na janela, e a página dela dentro da coluna (autoteste).</summary>
+    public IEnumerable<(Rectangle Frame, Rectangle View)> KickLayout => _pages
+        .Where(p => p.IsKick && p.Url is not null)
+        .Select(p => (p.Frame.Bounds, p.View.Bounds));
 
     /// <summary>O Windows às vezes traz de volta para a tela uma janela que ficou fora dela (ao mudar de monitor).</summary>
     public void KeepParked()
@@ -224,23 +308,22 @@ internal sealed class LivesWindow : Form
         base.OnFormClosed(e);
     }
 
-    private void Park()
+    private async Task<Page> AddPageAsync(CoreWebView2Environment env, string profile, Action<CoreWebView2>? setup, bool kick)
     {
-        _revealed = false;
-        WindowState = FormWindowState.Normal;
-        var screens = SystemInformation.VirtualScreen;
-        Location = new Point(screens.Right + 100, screens.Top);
-    }
-
-    private async Task<Page> AddPageAsync(CoreWebView2Environment env, string profile, Action<CoreWebView2>? setup)
-    {
-        var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Theme.Back };
-        var page = new Page { View = view, Button = new ToolStripButton { Visible = false } };
+        var view = new WebView2 { Dock = kick ? DockStyle.None : DockStyle.Fill, DefaultBackgroundColor = Theme.Back };
+        var frame = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Back };
+        frame.Controls.Add(view);
+        var page = new Page { View = view, Frame = frame, IsKick = kick, Button = new ToolStripButton { Visible = false } };
         int tab = _pages.Count;
         page.Button.Click += (_, _) => Select(tab);
+        if (kick)
+        {
+            frame.Resize += (_, _) => PlaceView(page);
+            PlaceView(page);
+        }
         _pages.Add(page);
-        _bar.Items.Add(page.Button);
-        _stack.Controls.Add(view);
+        _bar.Items.Insert(_bar.Items.IndexOf(_next), page.Button);
+        _stack.Controls.Add(frame);
 
         var options = env.CreateCoreWebView2ControllerOptions();
         options.ProfileName = profile;
@@ -251,10 +334,27 @@ internal sealed class LivesWindow : Form
         core.IsMuted = true;
         core.Settings.IsStatusBarEnabled = false;
         core.NavigationCompleted += (_, e) => page.Loaded = e.IsSuccess && page.Url is not null;
+        core.DOMContentLoaded += (_, _) =>
+        {
+            if (page.Kick is not null)
+                _ = core.ExecuteScriptAsync(ChatScript(_revealed));
+        };
+        // A página morreu (no notebook, por falta de memória): abre de novo na hora, sem esperar a conferência.
+        core.ProcessFailed += (_, e) =>
+        {
+            if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited && page.Url is not null && !IsDisposed)
+            {
+                page.Reloads++;
+                Navigate(page, page.Url, page.Kick);
+            }
+        };
         core.NewWindowRequested += (_, e) => PopupWindow.HandleNewWindow(env, profile, this, e);
         // Vídeo na menor qualidade: continua contando como assistindo, gastando bem menos.
         VideoQuality.LimitToLowest(env, core);
         AdBlock.Apply(env, core);
+        // Ninguém fica olhando as lives: com o "reduzir movimento" do sistema, a Kick corta as animações dela.
+        await core.CallDevToolsProtocolMethodAsync("Emulation.setEmulatedMedia",
+            "{\"features\":[{\"name\":\"prefers-reduced-motion\",\"value\":\"reduce\"}]}");
         setup?.Invoke(core);
         return page;
     }
@@ -263,7 +363,7 @@ internal sealed class LivesWindow : Form
     {
         // Outra live na vaga começa a conferência do zero (recarregar a mesma mantém a contagem).
         if (kick != page.Kick)
-            page.Reloads = 0;
+            page.Reloads = page.Retries = 0;
         page.Url = url;
         page.Kick = kick;
         page.Loaded = false;
@@ -275,12 +375,81 @@ internal sealed class LivesWindow : Form
         page.View.CoreWebView2?.Navigate(url ?? "about:blank");
     }
 
+    private void ApplyChat()
+    {
+        foreach (var page in _pages.Where(p => p.Kick is not null && p.Loaded))
+            _ = page.View.ExecuteScriptAsync(ChatScript(_revealed));
+    }
+
     private void Select(int tab)
     {
+        _selected = tab;
+        Arrange();
+        Fit();
+    }
+
+    private List<Page> OpenKick => _pages.Where(p => p.IsKick && p.Url is not null).ToList();
+
+    // Numa aba da Kick, as lives dela lado a lado (a não ser com "Página inteira").
+    private bool Columns => !_fullPage.Checked && _selected < _pages.Count && _pages[_selected].IsKick && OpenKick.Count > 0;
+
+    /// <summary>
+    /// Quem fica na frente, e as colunas da Kick lado a lado. Só muda a ordem e o tamanho: as páginas de
+    /// trás continuam visíveis para o navegador e tocando.
+    /// </summary>
+    private void Arrange()
+    {
+        if (_pages.Count == 0)
+            return;
+        var kick = OpenKick;
+        // A aba escolhida pode ter ficado em branco (a live saiu do ar): vai para outra aberta.
+        if (_selected >= _pages.Count || _pages[_selected].Url is null)
+            _selected = Math.Max(0, kick.Count > 0 ? _pages.IndexOf(kick[0]) : _pages.FindIndex(p => p.Url is not null));
+        bool columns = Columns;
+        _stack.SuspendLayout();
+        foreach (var page in _pages)
+            page.Frame.Dock = DockStyle.Fill;
+        if (columns)
+        {
+            // A última coluna fica com o resto da largura (com uma live só, mostra um pouco do vídeo também).
+            for (int i = 0; i < kick.Count; i++)
+            {
+                if (i < kick.Count - 1)
+                {
+                    kick[i].Frame.Dock = DockStyle.Left;
+                    kick[i].Frame.Width = LogicalToDeviceUnits(ChatWidth);
+                }
+                kick[i].Frame.BringToFront();
+            }
+        }
+        else
+        {
+            _pages[_selected].Frame.BringToFront();
+        }
+        _stack.ResumeLayout(true);
         for (int i = 0; i < _pages.Count; i++)
-            _pages[i].Button.Checked = i == tab;
-        // Só muda qual fica na frente: as de trás continuam visíveis para o navegador e tocando.
-        _pages[tab].View.BringToFront();
+            _pages[i].Button.Checked = columns ? kick.Contains(_pages[i]) : i == _selected;
+        _fullPage.Visible = kick.Count > 0;
+    }
+
+    /// <summary>Na tela: da altura da área de trabalho, e da largura das colunas de chat (ou da página inteira).</summary>
+    private void Fit()
+    {
+        if (!_revealed)
+            return;
+        var area = Screen.FromControl(this).WorkingArea;
+        int content = Columns ? Math.Max(2, OpenKick.Count) * LogicalToDeviceUnits(ChatWidth) : LogicalToDeviceUnits(PageWidth);
+        int width = Math.Min(area.Width, content + Width - _stack.ClientSize.Width);
+        int x = area.X + (area.Width - width) / 2 + _order * LogicalToDeviceUnits(40);
+        Bounds = new Rectangle(Math.Clamp(x, area.X, area.Right - width), area.Y, width, area.Height);
+    }
+
+    /// <summary>A página da Kick na largura de computador, encostada à direita da coluna: o chat aparece inteiro.</summary>
+    private void PlaceView(Page page)
+    {
+        var size = page.Frame.ClientSize;
+        int width = Math.Max(size.Width, LogicalToDeviceUnits(PageWidth));
+        page.View.Bounds = new Rectangle(size.Width - width, 0, width, size.Height);
     }
 
     private static string TabName(string url)

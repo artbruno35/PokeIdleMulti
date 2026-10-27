@@ -37,6 +37,7 @@ internal sealed class DeckForm : Form
     private readonly Dictionary<string, bool?> _kickLive = new();
     private DateTime _kickCheckAt;
     private bool _kickChecking;
+    private bool _kickWatching;
     private readonly Dictionary<(int Pane, string Extension), PopupWindow> _extensionWindows = new();
     private readonly ToolStrip _bar = new ClickThroughToolStrip();
     private readonly StatusStrip _status = new();
@@ -177,7 +178,7 @@ internal sealed class DeckForm : Form
         _livesButton.DropDownOpening += (_, _) => FillLivesMenu();
         _livesButton.DropDownItems.Add("…");
         _kickButton.Alignment = ToolStripItemAlignment.Right;
-        _kickButton.ToolTipText = "Abre a live da Kick com o chat, para resgatar os pontos do canal (300 pontos = 1 h de +15% de XP)";
+        _kickButton.ToolTipText = "Abre os chats da Kick da conta, para resgatar os pontos do canal (300 pontos = 1 h de +15% de XP)";
         _kickButton.DropDownOpening += (_, _) => FillKickMenu();
         _kickButton.DropDownItems.Add("…");
         _sniperButton.Alignment = ToolStripItemAlignment.Right;
@@ -503,10 +504,9 @@ internal sealed class DeckForm : Form
         items.Clear();
         for (int i = 0; i < Accounts; i++)
         {
-            if (_lives[i] is not LivesWindow window)
-                continue;
-            foreach (var (tab, name) in window.KickTabs)
-                items.Add($"{_config.AccountNames[i]} · {name}", null, (_, _) => window.Reveal(Screen.FromControl(this).WorkingArea, tab));
+            int index = i;
+            if (_lives[i] is LivesWindow window && window.KickTabs.Any())
+                items.Add($"{_config.AccountNames[i]} · {string.Join(", ", window.KickChannels)}", null, (_, _) => ShowKick(index));
         }
         if (items.Count == 0)
             items.Add(new ToolStripMenuItem("Nenhuma live da Kick no ar agora") { Enabled = false });
@@ -559,6 +559,8 @@ internal sealed class DeckForm : Form
                 _ = pane.CheckLoginScreenAsync();
         if (!_selfTest && !_kickChecking && DateTime.Now >= _kickCheckAt && _lives.Any(l => l is not null))
             _ = CheckKickAsync();
+        if (!_selfTest && _seconds % 30 == 15)
+            _ = WatchKickAsync();
         UpdateVotes();
     }
 
@@ -1124,6 +1126,7 @@ internal sealed class DeckForm : Form
         if (urls.Count > 0 || kickSlots > 0)
         {
             _lives[index] = await LivesWindow.CreateAsync(_env, _panes[index].ProfileName, _config.AccountNames[index], urls, kickSlots, SelfTestSetup);
+            _lives[index]!.NextRequested += () => ShowNextKick(index);
             ApplyKick();
             // Confere logo quem está no ar (o autoteste não sai para a internet: abre as primeiras da lista).
             _kickCheckAt = DateTime.Now;
@@ -1148,10 +1151,27 @@ internal sealed class DeckForm : Form
             _kickChecking = false;
         }
         ApplyKick();
-        // E se as lives abertas estão mesmo tocando (vídeo parado não rende pontos).
-        foreach (var window in _lives.OfType<LivesWindow>().ToList())
-            if (!window.IsDisposed)
-                await window.WatchKickAsync();
+    }
+
+    /// <summary>
+    /// A cada 30 s, se as lives da Kick abertas estão mesmo tocando (vídeo parado não rende pontos); a que
+    /// caiu e não voltou sozinha é recarregada.
+    /// </summary>
+    private async Task WatchKickAsync()
+    {
+        if (_kickWatching)
+            return;
+        _kickWatching = true;
+        try
+        {
+            foreach (var window in _lives.OfType<LivesWindow>().ToList())
+                if (!window.IsDisposed)
+                    await window.WatchKickAsync();
+        }
+        finally
+        {
+            _kickWatching = false;
+        }
         UpdateBar();
     }
 
@@ -1303,8 +1323,36 @@ internal sealed class DeckForm : Form
 
     private void ShowLives()
     {
+        int order = 0;
         foreach (var window in _lives.OfType<LivesWindow>())
-            window.Reveal(Screen.FromControl(this).WorkingArea);
+            window.Reveal(Screen.FromControl(this).WorkingArea, order: order++);
+    }
+
+    /// <summary>
+    /// Os chats da Kick da conta, para resgatar os pontos; "Próxima conta" na janela passa para a seguinte
+    /// que tem live da Kick aberta.
+    /// </summary>
+    private void ShowKick(int index)
+    {
+        var withKick = Enumerable.Range(0, Accounts).Where(i => _lives[i]?.KickTabs.Any() == true).ToList();
+        if (_lives[index] is not LivesWindow window || !withKick.Contains(index))
+            return;
+        foreach (int i in withKick)
+            _lives[i]!.HasNext = withKick.Count > 1;
+        window.Reveal(Screen.FromControl(this).WorkingArea, window.KickTabs.First().Tab);
+    }
+
+    private void ShowNextKick(int index)
+    {
+        for (int step = 1; step < Accounts; step++)
+        {
+            int next = (index + step) % Accounts;
+            if (_lives[next]?.KickTabs.Any() != true)
+                continue;
+            _lives[index]?.Park();
+            ShowKick(next);
+            return;
+        }
     }
 
     private async Task EditChannelsAsync()
@@ -1348,7 +1396,7 @@ internal sealed class DeckForm : Form
         File.WriteAllText(Path.Combine(site, "twitch.html"), "<!doctype html><title>Twitch-teste</title>");
         // Live de teste com vídeo "tocando" (o tempo anda); a do yetz fica parada, sem vídeo para tocar.
         File.WriteAllText(Path.Combine(site, "kick.html"),
-            "<!doctype html><title>Kick-teste</title><video muted></video><script>" +
+            "<!doctype html><title>Kick-teste</title><video muted></video><div id=channel-chatroom>chat</div><script>" +
             "if (!location.search.includes('yetz')) { const v = document.querySelector('video');" +
             " Object.defineProperty(v, 'paused', { get: () => false });" +
             " Object.defineProperty(v, 'currentTime', { get: () => performance.now() / 1000 }); }</script>");
@@ -1596,6 +1644,32 @@ internal sealed class DeckForm : Form
             Check("todas as páginas das lives visíveis para o navegador (vídeo de trás toca)",
                 visibility.Count == 3 && visibility.All(v => v == "\"visible\""), string.Join(", ", visibility));
 
+            // Fora da tela o chat da Kick fica escondido (gasta menos); mostrar as lives traz de volta, e fechar esconde.
+            const string ChatShown = "(() => { const c = document.querySelector('#channel-chatroom'); return c ? getComputedStyle(c).display : 'sem chat'; })()";
+            async Task<string> Chat() => lives0 is null ? "" : string.Join(",", await lives0.EvalAsync(ChatShown));
+            string chatParked = await Chat();
+            // 💰 Pontos da Kick: só as colunas de chat lado a lado (a página fica na largura de computador,
+            // encostada à direita), e a janela da altura da tela.
+            ShowKick(0);
+            await Task.Delay(300);
+            string chatShown = await Chat();
+            var screenArea = lives0 is null ? Rectangle.Empty : Screen.FromControl(lives0).WorkingArea;
+            var columns = lives0?.KickLayout.ToList() ?? new();
+            int chatWidth = lives0?.LogicalToDeviceUnits(340) ?? 0, pageWidth = lives0?.LogicalToDeviceUnits(1100) ?? 0;
+            bool fits = lives0 is not null && lives0.Bounds.Height == screenArea.Height && screenArea.Contains(lives0.Bounds);
+            bool sideBySide = columns.Count == 2 && columns.All(c => c.Frame.Width == chatWidth && c.View.Width == pageWidth
+                && c.View.Right == c.Frame.Width && c.View.Height == c.Frame.Height) && columns[0].Frame.Right == columns[1].Frame.Left;
+            string layout = lives0 is null ? "" : $"janela={lives0.Bounds} área={screenArea} colunas={string.Join(" ", columns.Select(c => $"{c.Frame}/{c.View}"))}";
+            lives0?.Close();
+            await Task.Delay(300);
+            string chatAgain = await Chat();
+            Activate();
+            Check("chat da Kick escondido com as lives fora da tela, e de volta ao mostrar",
+                chatParked == "\"sem chat\",\"none\",\"none\"" && chatShown == "\"sem chat\",\"block\",\"block\""
+                && chatAgain == chatParked && lives0 is { Parked: true, Visible: true },
+                $"fora={chatParked} mostrando={chatShown} fechou={chatAgain}");
+            Check("pontos da Kick: os 2 chats lado a lado, na altura da tela", fits && sideBySide, layout);
+
             // Propaganda cortada nas lives: o pedido a um site de anúncio volta 403 do próprio deck.
             if (lives0 is not null)
                 await lives0.EvalAsync("window.__ads = 'pendente'; fetch('https://pagead2.googlesyndication.com/deck-teste')" +
@@ -1683,6 +1757,36 @@ internal sealed class DeckForm : Form
                 && playback.TryGetValue("yetz", out var yetz) && yetz.Reloads == 1
                 && summary.Contains("biscoitao ▶") && summary.Contains("yetz ⟳1"),
                 summary);
+
+            // A página da live morre (como por falta de memória no notebook) e abre de novo na hora. Sem
+            // internet ela nem carrega: a conferência tenta de novo depois de duas paradas, e o vídeo volta.
+            var kickFile = Path.Combine(_root, "site", "kick.html");
+            File.Move(kickFile, kickFile + ".fora");
+            int killed = 0;
+            if (_env is not null)
+                foreach (var renderer in await _env.GetProcessExtendedInfosAsync())
+                    if (renderer.AssociatedFrameInfos.Any(f => f.Source.Contains("kick.html?canal=biscoitao")))
+                    {
+                        using var process = Process.GetProcessById(renderer.ProcessInfo.ProcessId);
+                        process.Kill();
+                        killed++;
+                    }
+            (bool? Playing, int Reloads) Biscoitao() => lives0?.KickPlayback.Where(k => k.Channel == "biscoitao")
+                .Select(k => (k.Playing, k.Reloads)).FirstOrDefault() ?? default;
+            bool reopenedNow = await WaitFor(() => Biscoitao().Reloads == 1 && lives0!.Loaded < lives0.Count, 15);
+            File.Move(kickFile + ".fora", kickFile);
+            if (lives0 is not null)
+                for (int i = 0; i < 2; i++)
+                    await lives0.WatchKickAsync();
+            bool loadedAgain = await WaitFor(() => lives0 is not null && lives0.Loaded == lives0.Count, 15);
+            if (lives0 is not null)
+                await lives0.WatchKickAsync();
+            // As lives também ficam sem animações, e continuam assim na página que abriu de novo.
+            var livesMotion = lives0 is null ? new List<string>() : await lives0.EvalAsync(ReducedMotion);
+            Check("lives da Kick: página que morreu abre de novo, e a que não carregou é recarregada",
+                killed > 0 && reopenedNow && loadedAgain && Biscoitao() is (true, 2) && livesMotion.Count == 3 && livesMotion.All(m => m == "true"),
+                $"processos fechados={killed} reabriu na hora={reopenedNow} carregou depois={loadedAgain} sem animações={string.Join(",", livesMotion)} {LivesSummary(0)}");
+            await WaitFor(() => _panes.All(p => p.Status == PaneStatus.Ok), 20);
             _kickLive.Clear();
 
             // deck.json da versão em que o kick só fechava a 2ª: vira 1 vaga, e o campo velho some ao salvar.
