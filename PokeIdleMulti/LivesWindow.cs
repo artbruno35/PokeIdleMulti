@@ -29,6 +29,7 @@ internal sealed class LivesWindow : Form
     private int _kickStart;
     private int _selected;
     private int _order;
+    private int _fitHeight;
     private bool _revealed;
 
     // A página da Kick é desenhada na largura de computador, que põe o chat numa lateral de 340 px à direita
@@ -69,12 +70,27 @@ internal sealed class LivesWindow : Form
     // Página travada não responde ao script; passado isso, conta como parada.
     private static readonly TimeSpan ScriptTimeout = TimeSpan.FromSeconds(10);
 
-    // Fora da tela ninguém lê o chat da Kick, e escondido ele não é desenhado: a live gasta quase metade da
-    // CPU. Mostrar a janela (para resgatar os pontos) traz o chat de volta.
-    private static string ChatScript(bool show) =>
-        "(() => { let s = document.getElementById('deck-sem-chat'); if (!s) { s = document.createElement('style'); " +
-        "s.id = 'deck-sem-chat'; s.textContent = '#channel-chatroom, #chatroom { display: none !important; }'; " +
-        $"(document.head || document.documentElement).appendChild(s); }} s.media = '{(show ? "not all" : "all")}'; return 1; }})()";
+    /// <summary>
+    /// O que aparece do chat da Kick. Fora da tela, nada: escondido ele não é desenhado, e a live gasta quase
+    /// metade da CPU. Nas colunas dos pontos, só o rodapé (o botão dos pontos e o popup de escolher o bônus),
+    /// sem as mensagens. Na página inteira, tudo.
+    /// </summary>
+    private enum ChatView { Hidden, Points, Full }
+
+    private ChatView _chatApplied;
+
+    private static string ChatScript(ChatView view)
+    {
+        string css = view switch
+        {
+            ChatView.Hidden => "#channel-chatroom, #chatroom { display: none !important; }",
+            ChatView.Points => "#chatroom-messages, [data-testid=\"pinned-message-modal\"], [aria-label=\"Expand leaderboard\"] " +
+                               "{ visibility: hidden !important; }",
+            _ => "",
+        };
+        return "(() => { let s = document.getElementById('deck-chat'); if (!s) { s = document.createElement('style'); " +
+               $"s.id = 'deck-chat'; (document.head || document.documentElement).appendChild(s); }} s.textContent = {JsonSerializer.Serialize(css)}; return 1; }})()";
+    }
 
     private LivesWindow(string accountName)
     {
@@ -106,6 +122,12 @@ internal sealed class LivesWindow : Form
         get => _next.Visible;
         set => _next.Visible = value;
     }
+
+    /// <summary>Altura da janela dos pontos, em pixels a 100% de escala (a tela baixa limita); muda arrastando a borda.</summary>
+    public int PointsHeight { get; set; } = 640;
+
+    /// <summary>A altura dos pontos mudou na mão (o deck guarda e usa nas outras contas).</summary>
+    public event Action<int>? PointsHeightChanged;
 
     /// <summary>Fechar de verdade (ao desligar as lives ou fechar o deck); senão o X só tira da tela.</summary>
     public bool AllowClose { get; set; }
@@ -230,7 +252,6 @@ internal sealed class LivesWindow : Form
         _revealed = true;
         _order = order;
         _fullPage.Checked = false;
-        ApplyChat();
         if (WindowState == FormWindowState.Minimized)
             WindowState = FormWindowState.Normal;
         // Primeiro para a tela certa (lá a escala pode ser outra), depois do tamanho dela.
@@ -337,7 +358,7 @@ internal sealed class LivesWindow : Form
         core.DOMContentLoaded += (_, _) =>
         {
             if (page.Kick is not null)
-                _ = core.ExecuteScriptAsync(ChatScript(_revealed));
+                _ = core.ExecuteScriptAsync(ChatScript(CurrentChat));
         };
         // A página morreu (no notebook, por falta de memória): abre de novo na hora, sem esperar a conferência.
         core.ProcessFailed += (_, e) =>
@@ -375,10 +396,13 @@ internal sealed class LivesWindow : Form
         page.View.CoreWebView2?.Navigate(url ?? "about:blank");
     }
 
+    private ChatView CurrentChat => !_revealed ? ChatView.Hidden : Columns ? ChatView.Points : ChatView.Full;
+
     private void ApplyChat()
     {
+        _chatApplied = CurrentChat;
         foreach (var page in _pages.Where(p => p.Kick is not null && p.Loaded))
-            _ = page.View.ExecuteScriptAsync(ChatScript(_revealed));
+            _ = page.View.ExecuteScriptAsync(ChatScript(_chatApplied));
     }
 
     private void Select(int tab)
@@ -430,18 +454,37 @@ internal sealed class LivesWindow : Form
         for (int i = 0; i < _pages.Count; i++)
             _pages[i].Button.Checked = columns ? kick.Contains(_pages[i]) : i == _selected;
         _fullPage.Visible = kick.Count > 0;
+        if (CurrentChat != _chatApplied)
+            ApplyChat();
     }
 
-    /// <summary>Na tela: da altura da área de trabalho, e da largura das colunas de chat (ou da página inteira).</summary>
+    /// <summary>
+    /// Na tela: nas colunas dos pontos, da largura delas e da altura escolhida (a tela baixa limita); na
+    /// página inteira, da altura da área de trabalho.
+    /// </summary>
     private void Fit()
     {
         if (!_revealed)
             return;
         var area = Screen.FromControl(this).WorkingArea;
-        int content = Columns ? Math.Max(2, OpenKick.Count) * LogicalToDeviceUnits(ChatWidth) : LogicalToDeviceUnits(PageWidth);
+        bool columns = Columns;
+        int content = columns ? Math.Max(2, OpenKick.Count) * LogicalToDeviceUnits(ChatWidth) : LogicalToDeviceUnits(PageWidth);
         int width = Math.Min(area.Width, content + Width - _stack.ClientSize.Width);
+        int height = columns ? Math.Min(area.Height, LogicalToDeviceUnits(PointsHeight)) : area.Height;
         int x = area.X + (area.Width - width) / 2 + _order * LogicalToDeviceUnits(40);
-        Bounds = new Rectangle(Math.Clamp(x, area.X, area.Right - width), area.Y, width, area.Height);
+        Bounds = new Rectangle(Math.Clamp(x, area.X, area.Right - width), area.Y + (area.Height - height) / 2, width, height);
+        _fitHeight = height;
+    }
+
+    // Arrastou a borda das colunas dos pontos: essa passa a ser a altura delas.
+    protected override void OnResizeEnd(EventArgs e)
+    {
+        base.OnResizeEnd(e);
+        if (!_revealed || !Columns || Height == _fitHeight)
+            return;
+        _fitHeight = Height;
+        PointsHeight = (int)Math.Round(Height * 96.0 / DeviceDpi);
+        PointsHeightChanged?.Invoke(PointsHeight);
     }
 
     /// <summary>A página da Kick na largura de computador, encostada à direita da coluna: o chat aparece inteiro.</summary>

@@ -70,6 +70,9 @@ internal sealed class DeckConfig
     /// </summary>
     public List<string> KickChannels { get; set; } = new() { "biscoitao", "yetz", "surskity" };
 
+    /// <summary>Altura da janela dos pontos da Kick, em pixels a 100% de escala (muda arrastando a borda dela).</summary>
+    public int KickPointsHeight { get; set; } = 640;
+
     /// <summary>O que o botão kick fechou em cada conta.</summary>
     public KickLimit[] Kick { get; set; } = NewKick();
 
@@ -111,6 +114,7 @@ internal sealed class DeckConfig
                 config.Kick[i].Slots = Math.Min(config.Kick[i].Slots, 1);
         config.KickSingle = null;
         config.Focused = Math.Clamp(config.Focused, 0, Accounts - 1);
+        config.KickPointsHeight = Math.Clamp(config.KickPointsHeight, 300, 3000);
         return config;
     }
 

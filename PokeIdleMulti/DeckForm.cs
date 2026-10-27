@@ -1126,7 +1126,16 @@ internal sealed class DeckForm : Form
         if (urls.Count > 0 || kickSlots > 0)
         {
             _lives[index] = await LivesWindow.CreateAsync(_env, _panes[index].ProfileName, _config.AccountNames[index], urls, kickSlots, SelfTestSetup);
-            _lives[index]!.NextRequested += () => ShowNextKick(index);
+            var window = _lives[index]!;
+            window.NextRequested += () => ShowNextKick(index);
+            window.PointsHeight = _config.KickPointsHeight;
+            window.PointsHeightChanged += height =>
+            {
+                _config.KickPointsHeight = height;
+                SaveConfig();
+                foreach (var other in _lives.OfType<LivesWindow>())
+                    other.PointsHeight = height;
+            };
             ApplyKick();
             // Confere logo quem está no ar (o autoteste não sai para a internet: abre as primeiras da lista).
             _kickCheckAt = DateTime.Now;
@@ -1396,7 +1405,7 @@ internal sealed class DeckForm : Form
         File.WriteAllText(Path.Combine(site, "twitch.html"), "<!doctype html><title>Twitch-teste</title>");
         // Live de teste com vídeo "tocando" (o tempo anda); a do yetz fica parada, sem vídeo para tocar.
         File.WriteAllText(Path.Combine(site, "kick.html"),
-            "<!doctype html><title>Kick-teste</title><video muted></video><div id=channel-chatroom>chat</div><script>" +
+            "<!doctype html><title>Kick-teste</title><video muted></video><div id=channel-chatroom><div id=chatroom-messages>msgs</div>botão dos pontos</div><script>" +
             "if (!location.search.includes('yetz')) { const v = document.querySelector('video');" +
             " Object.defineProperty(v, 'paused', { get: () => false });" +
             " Object.defineProperty(v, 'currentTime', { get: () => performance.now() / 1000 }); }</script>");
@@ -1644,19 +1653,22 @@ internal sealed class DeckForm : Form
             Check("todas as páginas das lives visíveis para o navegador (vídeo de trás toca)",
                 visibility.Count == 3 && visibility.All(v => v == "\"visible\""), string.Join(", ", visibility));
 
-            // Fora da tela o chat da Kick fica escondido (gasta menos); mostrar as lives traz de volta, e fechar esconde.
-            const string ChatShown = "(() => { const c = document.querySelector('#channel-chatroom'); return c ? getComputedStyle(c).display : 'sem chat'; })()";
+            // Fora da tela o chat da Kick fica escondido (gasta menos); nos pontos aparece só o rodapé, sem as
+            // mensagens; fechar esconde de novo.
+            const string ChatShown = "(() => { const c = document.querySelector('#channel-chatroom'); return c ? getComputedStyle(c).display + ' ' " +
+                "+ getComputedStyle(document.querySelector('#chatroom-messages')).visibility : 'sem chat'; })()";
             async Task<string> Chat() => lives0 is null ? "" : string.Join(",", await lives0.EvalAsync(ChatShown));
             string chatParked = await Chat();
             // 💰 Pontos da Kick: só as colunas de chat lado a lado (a página fica na largura de computador,
-            // encostada à direita), e a janela da altura da tela.
+            // encostada à direita), com a altura dos pontos (a tela baixa limita), no meio da tela.
             ShowKick(0);
             await Task.Delay(300);
             string chatShown = await Chat();
             var screenArea = lives0 is null ? Rectangle.Empty : Screen.FromControl(lives0).WorkingArea;
             var columns = lives0?.KickLayout.ToList() ?? new();
             int chatWidth = lives0?.LogicalToDeviceUnits(340) ?? 0, pageWidth = lives0?.LogicalToDeviceUnits(1100) ?? 0;
-            bool fits = lives0 is not null && lives0.Bounds.Height == screenArea.Height && screenArea.Contains(lives0.Bounds);
+            bool fits = lives0 is not null && lives0.Bounds.Height == Math.Min(screenArea.Height, lives0.LogicalToDeviceUnits(640))
+                && screenArea.Contains(lives0.Bounds) && Math.Abs(lives0.Bounds.Top - screenArea.Top - (screenArea.Bottom - lives0.Bounds.Bottom)) <= 1;
             bool sideBySide = columns.Count == 2 && columns.All(c => c.Frame.Width == chatWidth && c.View.Width == pageWidth
                 && c.View.Right == c.Frame.Width && c.View.Height == c.Frame.Height) && columns[0].Frame.Right == columns[1].Frame.Left;
             string layout = lives0 is null ? "" : $"janela={lives0.Bounds} área={screenArea} colunas={string.Join(" ", columns.Select(c => $"{c.Frame}/{c.View}"))}";
@@ -1664,11 +1676,11 @@ internal sealed class DeckForm : Form
             await Task.Delay(300);
             string chatAgain = await Chat();
             Activate();
-            Check("chat da Kick escondido com as lives fora da tela, e de volta ao mostrar",
-                chatParked == "\"sem chat\",\"none\",\"none\"" && chatShown == "\"sem chat\",\"block\",\"block\""
+            Check("chat da Kick escondido fora da tela, e nos pontos só o rodapé (sem as mensagens)",
+                chatParked == "\"sem chat\",\"none visible\",\"none visible\"" && chatShown == "\"sem chat\",\"block hidden\",\"block hidden\""
                 && chatAgain == chatParked && lives0 is { Parked: true, Visible: true },
                 $"fora={chatParked} mostrando={chatShown} fechou={chatAgain}");
-            Check("pontos da Kick: os 2 chats lado a lado, na altura da tela", fits && sideBySide, layout);
+            Check("pontos da Kick: os 2 chats lado a lado, com a altura dos pontos", fits && sideBySide, layout);
 
             // Propaganda cortada nas lives: o pedido a um site de anúncio volta 403 do próprio deck.
             if (lives0 is not null)
