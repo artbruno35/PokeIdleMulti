@@ -13,6 +13,8 @@ extensões separados.
 - Cabeçalho de cada conta: ⏻ desligar, ⛶ ampliar, ⟳ recarregar, 🔊 som, **kick** (escolher qual live da Kick fechar, ou todas), 🗳 voto no TopIdle e os botões das extensões.
 - Lives para o bônus de XP: presença nos chats da Twitch e as 2 primeiras lives da Kick da lista que estão no ar (vídeo na menor qualidade, sem propaganda nem rastreadores), numa janela fora da tela. A cada 2 min o deck confere se o vídeo de cada live está tocando (▶ na barra de baixo) e recarrega a que travou (⟳).
 - Barra de baixo: a RAM separada em jogo · lives · navegador, para ver o que está pesando.
+- 🐢 Menos animações (ligado de fábrica): o jogo vê o "reduzir movimento" do sistema e ele mesmo desliga as animações que rodam sem parar. Conta parada na tela de login ganha um aviso no cabeçalho (o captcha do login vai juntando memória).
+- Para gastar ainda menos, use no próprio jogo **Configurações → Desempenho → Modo Economia** (a cena da hunt deixa de ser desenhada) ou o **ULTRA** nas contas que não está olhando.
 - 🔁 Eco (um clique numa conta se repete nas outras), 🎯 liga/desliga do Rotom Sniper, 🧩 extensões por conta.
 
 ### Baixar e abrir (outro PC)

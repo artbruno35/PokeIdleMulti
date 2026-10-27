@@ -54,6 +54,7 @@ internal sealed class DeckForm : Form
     private readonly ToolStripDropDownButton _sniperButton = new("🎯 Sniper") { Visible = false };
     private readonly bool[] _hasSniper = new bool[Accounts];
     private readonly ToolStripButton _fullscreenButton = new("⛶ Tela cheia");
+    private readonly ToolStripButton _motionButton = new("🐢 Menos animações");
     private readonly ToolStripStatusLabel _ram = new();
     private readonly ToolStripStatusLabel _livesStatus = new();
     private readonly ToolStripStatusLabel _voteStatus = new();
@@ -97,7 +98,7 @@ internal sealed class DeckForm : Form
         BuildStatus();
         for (int i = 0; i < Accounts; i++)
         {
-            var pane = new AccountPane(i) { AccountName = _config.AccountNames[i] };
+            var pane = new AccountPane(i) { AccountName = _config.AccountNames[i], ReduceMotion = _config.ReduceMotion };
             pane.FocusRequested += p => ToggleFocus(p.Index);
             pane.ReloadRequested += p => p.Reload();
             pane.FullscreenRequested += _ => ToggleFullscreen();
@@ -183,7 +184,13 @@ internal sealed class DeckForm : Form
         _sniperButton.ToolTipText = "Liga ou desliga o Rotom Sniper (compras automáticas no mercado) em todas as contas";
         _sniperButton.DropDownOpening += (_, _) => FillSniperMenu();
         _sniperButton.DropDownItems.Add("…");
+        _motionButton.Alignment = ToolStripItemAlignment.Right;
+        _motionButton.ToolTipText = "Menos animações no jogo: o próprio jogo desliga as que rodam sem parar (selos pulsando, " +
+                                    "halos, cartas). Gasta bem menos CPU e placa de vídeo. Desmarque para ver todas";
+        _motionButton.Checked = _config.ReduceMotion;
+        _motionButton.Click += async (_, _) => await SetReduceMotionAsync(!_config.ReduceMotion);
         _bar.Items.Add(_fullscreenButton);
+        _bar.Items.Add(_motionButton);
         _bar.Items.Add(_extensionsButton);
         _bar.Items.Add(_sniperButton);
         _bar.Items.Add(_livesButton);
@@ -547,6 +554,9 @@ internal sealed class DeckForm : Form
                 window.KeepParked();
             UpdateBar();
         }
+        if (_seconds % 30 == 0)
+            foreach (var pane in _panes)
+                _ = pane.CheckLoginScreenAsync();
         if (!_selfTest && !_kickChecking && DateTime.Now >= _kickCheckAt && _lives.Any(l => l is not null))
             _ = CheckKickAsync();
         UpdateVotes();
@@ -579,12 +589,12 @@ internal sealed class DeckForm : Form
                     continue;
                 }
                 count++;
-                // Cada página roda num processo; o que ele mostra diz de quem é.
-                var hosts = info.AssociatedFrameInfos
-                    .Select(f => Uri.TryCreate(f.Source, UriKind.Absolute, out var uri) ? uri.Host : "").ToList();
+                // Cada página roda num processo, e um iframe conta para a página que o abriu: o captcha do
+                // Cloudflare na tela de login é do jogo; o da Kick, das lives.
+                var hosts = info.AssociatedFrameInfos.Select(PageHost).ToList();
                 if (hosts.Any(h => h.EndsWith("pokeidle.io")))
                     game += bytes;
-                else if (hosts.Any(h => h.EndsWith("kick.com") || h.EndsWith("twitch.tv") || h.EndsWith("cloudflare.com")))
+                else if (hosts.Any(h => h.EndsWith("kick.com") || h.EndsWith("twitch.tv")))
                     lives += bytes;
                 else
                     other += bytes;
@@ -604,6 +614,27 @@ internal sealed class DeckForm : Form
     }
 
     private static string Gb(long bytes) => (bytes / 1024d / 1024 / 1024).ToString("0.0");
+
+    /// <summary>O site da página onde o quadro está (sobe dos iframes até a página).</summary>
+    private static string PageHost(CoreWebView2FrameInfo frame)
+    {
+        while (frame.ParentFrameInfo is CoreWebView2FrameInfo parent)
+            frame = parent;
+        return Uri.TryCreate(frame.Source, UriKind.Absolute, out var uri) ? uri.Host : "";
+    }
+
+    /// <summary>Liga ou desliga o "menos animações" em todas as contas, na hora (sem recarregar).</summary>
+    private async Task SetReduceMotionAsync(bool reduce)
+    {
+        _config.ReduceMotion = reduce;
+        _motionButton.Checked = reduce;
+        SaveConfig();
+        foreach (var pane in _panes)
+        {
+            pane.ReduceMotion = reduce;
+            await pane.ApplyReduceMotionAsync();
+        }
+    }
 
     // ---------- Ações das contas ----------
 
@@ -1382,6 +1413,29 @@ internal sealed class DeckForm : Form
             Check("4 contas abriram (a 4ª ligada no ⏻)", loaded && _panes.All(p => p.Core?.DocumentTitle == "Jogo-teste"),
                 string.Join(", ", _panes.Select(p => p.Status)));
 
+            // Menos animações: o jogo vê o "reduzir movimento" do sistema ligado; o botão desliga e religa na hora.
+            const string ReducedMotion = "matchMedia('(prefers-reduced-motion: reduce)').matches";
+            async Task<string> Motion() => string.Join(",", await Task.WhenAll(_panes.Select(p => Eval(p, ReducedMotion))));
+            var motionStart = await Motion();
+            await SetReduceMotionAsync(false);
+            var motionOff = await Motion();
+            await SetReduceMotionAsync(true);
+            var motionOn = await Motion();
+            Check("menos animações no jogo (e o botão liga e desliga na hora)",
+                motionStart == "true,true,true,true" && motionOff == "false,false,false,false" && motionOn == "true,true,true,true"
+                && _motionButton.Checked && _config.ReduceMotion,
+                $"ao abrir={motionStart} desligado={motionOff} religado={motionOn}");
+
+            // Conta parada na tela de login: o cabeçalho avisa (o captcha de lá vai juntando memória).
+            await Eval(_panes[1], "document.body.insertAdjacentHTML('beforeend', '<div id=portal></div><div id=login></div>'); 1");
+            await _panes[1].CheckLoginScreenAsync();
+            string loginInfo = _panes[1].HeaderInfo;
+            await Eval(_panes[1], "document.querySelector('#portal').remove(); document.querySelector('#login').remove(); 1");
+            await _panes[1].CheckLoginScreenAsync();
+            Check("aviso de conta parada na tela de login",
+                loginInfo.Contains("tela de login") && !_panes[1].HeaderInfo.Contains("tela de login") && !_panes[0].HeaderInfo.Contains("tela de login"),
+                $"com login='{loginInfo}' sem='{_panes[1].HeaderInfo}'");
+
             await Eval(_panes[0], "localStorage.setItem('quem', 'conta1')");
             var own = await Eval(_panes[0], "localStorage.getItem('quem')");
             var other = await Eval(_panes[1], "localStorage.getItem('quem')");
@@ -1452,6 +1506,8 @@ internal sealed class DeckForm : Form
             var ext0 = await Eval(_panes[0], "document.documentElement.dataset.ext || null");
             var ext1 = await Eval(_panes[1], "document.documentElement.dataset.ext || null");
             Check("extensão roda na conta 1 e só nela", ext0 == "\"ok\"" && ext1 == "null", $"conta1={ext0} conta2={ext1} id={info.Id}");
+            Check("menos animações continua depois de recarregar",
+                await Eval(_panes[0], ReducedMotion) == "true" && await Eval(_panes[1], ReducedMotion) == "true");
             Check("botão da extensão no cabeçalho da conta 1", _panes[0].ExtensionButtonCount == 1 && _panes[1].ExtensionButtonCount == 0);
 
             // O liga/desliga do sniper, com a extensão de teste no lugar do Rotom: grava no storage dela
@@ -1652,6 +1708,7 @@ internal sealed class DeckForm : Form
                 && _lives[0] is LivesWindow w && w.Count > 0 && w.Loaded == w.Count, 20);
             Check("ligar a conta 1 de novo: o jogo e as lives voltam", back,
                 $"status={_panes[0].Status} título='{_panes[0].Core?.DocumentTitle}' lives={(_lives[0] is LivesWindow lw ? $"{lw.Loaded}/{lw.Count}" : "fechadas")}");
+            Check("menos animações continua depois de desligar e ligar a conta", await Eval(_panes[0], ReducedMotion) == "true");
 
             WindowState = FormWindowState.Minimized;
             await Task.Delay(1500);

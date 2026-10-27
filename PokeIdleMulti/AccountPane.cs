@@ -41,6 +41,12 @@ internal sealed class AccountPane : UserControl
     private string? _note;
     private DateTime _noteUntil;
     private bool _kickClosed;
+    private bool _loginScreen;
+
+    // A tela de login do jogo está à vista (a mesma conta que o jogo faz para desenhar o captcha).
+    private const string LoginScript =
+        "(() => { const p = document.querySelector('#portal'), l = document.querySelector('#login');" +
+        " return !!p && !!l && !p.classList.contains('hidden') && !l.classList.contains('hidden'); })()";
 
     public AccountPane(int index)
     {
@@ -180,6 +186,7 @@ internal sealed class AccountPane : UserControl
         };
         await core.AddScriptToExecuteOnDocumentCreatedAsync(KeyScript);
         await core.AddScriptToExecuteOnDocumentCreatedAsync(Echo.CaptureScript);
+        await ApplyReduceMotionAsync();
 
         setup?.Invoke(core);
         if (prepare is not null)
@@ -192,6 +199,61 @@ internal sealed class AccountPane : UserControl
         StartedAt = null;
         Core?.Reload();
     }
+
+    /// <summary>Menos animações (lido ao criar o navegador da conta; mudou depois, chame <see cref="ApplyReduceMotionAsync"/>).</summary>
+    public bool ReduceMotion { get; set; }
+
+    /// <summary>
+    /// A página passa a ver o "reduzir movimento" do sistema ligado (ou desligado), e o próprio jogo
+    /// desliga ~100 grupos de animação que rodam sem parar: selos pulsando, halos, cartas, o portal do
+    /// login. Medido na tela de login: metade da CPU da página e da placa de vídeo. Vale até fechar o deck,
+    /// inclusive depois de recarregar.
+    /// </summary>
+    public async Task ApplyReduceMotionAsync()
+    {
+        if (Core is null)
+            return;
+        var features = ReduceMotion ? "[{\"name\":\"prefers-reduced-motion\",\"value\":\"reduce\"}]" : "[]";
+        try
+        {
+            await Core.CallDevToolsProtocolMethodAsync("Emulation.setEmulatedMedia", $"{{\"features\":{features}}}");
+        }
+        catch
+        {
+            // A página está fechando: na próxima abertura ela volta a ler a escolha.
+        }
+    }
+
+    /// <summary>
+    /// Confere se a conta está parada na tela de login. Ali o jogo mantém o captcha do Cloudflare, que
+    /// refaz o desafio sozinho e vai juntando memória (medido: +60 MB a cada 30 s no começo).
+    /// </summary>
+    public async Task CheckLoginScreenAsync()
+    {
+        bool login = false;
+        if (Core is not null && !Off && _status == PaneStatus.Ok)
+        {
+            try
+            {
+                login = await WebView.ExecuteScriptAsync(LoginScript) == "true";
+            }
+            catch
+            {
+                return;
+            }
+        }
+        if (login == _loginScreen)
+            return;
+        _loginScreen = login;
+        _info.ToolTipText = login
+            ? "Na tela de login o jogo mantém o captcha do Cloudflare, que refaz o desafio sozinho e vai juntando " +
+              "memória (centenas de MB em poucas horas). Entre na conta ou desligue-a no ⏻."
+            : null;
+        RefreshHeader();
+    }
+
+    /// <summary>O texto ao lado do nome no cabeçalho, para o autoteste.</summary>
+    public string HeaderInfo => _info.Text ?? "";
 
     public void SetMuted(bool muted)
     {
@@ -345,6 +407,7 @@ internal sealed class AccountPane : UserControl
         };
         _info.Text = DateTime.Now < _noteUntil ? "· " + _note
             : _statusText is not null ? "· " + _statusText
+            : _loginScreen ? "· na tela de login: entre ou desligue no ⏻"
             : StartedAt is DateTime started ? "· rodando há " + FormatUptime(DateTime.Now - started)
             : "";
     }

@@ -37,6 +37,12 @@ internal sealed class DeckConfig
     /// <summary>Contas desligadas no botão ⏻: ficam no deck, mas não abrem o jogo (nem extensões, lives e voto).</summary>
     public bool[] Off { get; set; } = new bool[Accounts];
 
+    /// <summary>
+    /// Menos animações no jogo (o "reduzir movimento" do sistema, que o próprio jogo respeita). Gasta bem
+    /// menos CPU e placa de vídeo com várias contas à vista.
+    /// </summary>
+    public bool ReduceMotion { get; set; } = true;
+
     /// <summary>Posição e tamanho da janela quando não está maximizada: x, y, largura, altura.</summary>
     public int[]? WindowBounds { get; set; }
 
