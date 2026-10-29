@@ -151,6 +151,10 @@ internal sealed class AccountPane : UserControl
             {
                 StartedAt ??= DateTime.Now;
                 SetStatus(PaneStatus.Ok, null);
+                // O ULTRA do deck vale para todas: a conta que recarrega volta a ele, mesmo se tinha saído no
+                // "Voltar ao jogo" da caixa.
+                if (Ultra)
+                    _ = SetUltraAsync(true);
             }
             else if (e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
             {
@@ -243,6 +247,9 @@ internal sealed class AccountPane : UserControl
         " const app = document.querySelector('#app');" +
         " if (!app || app.classList.contains('hidden') || localStorage.getItem('cfg-ultra') === '1') { localStorage.setItem('cfg-ultra', '1'); return true; }" +
         " document.querySelector('#btn-config')?.click(); document.querySelector('#cfg-ultra')?.click(); return ultra(); })";
+
+    /// <summary>O ULTRA do deck ligado: a cada carregamento do jogo a conta volta a ele.</summary>
+    public bool Ultra { get; set; }
 
     /// <summary>A página é o jogo (deck.test: o jogo do autoteste).</summary>
     private bool OnGame => Core is not null && Uri.TryCreate(Core.Source, UriKind.Absolute, out var uri)

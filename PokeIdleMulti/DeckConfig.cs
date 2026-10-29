@@ -43,6 +43,12 @@ internal sealed class DeckConfig
     /// </summary>
     public bool ReduceMotion { get; set; } = true;
 
+    /// <summary>
+    /// O Modo ULTRA Economia do jogo em todas as contas (o jogo inteiro fora da tela, só uma caixa de números).
+    /// Ligado, a conta que recarrega ou é ligada volta a ele sozinha.
+    /// </summary>
+    public bool Ultra { get; set; }
+
     /// <summary>Posição e tamanho da janela quando não está maximizada: x, y, largura, altura.</summary>
     public int[]? WindowBounds { get; set; }
 

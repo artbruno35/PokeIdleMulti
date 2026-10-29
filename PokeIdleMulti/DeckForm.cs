@@ -56,7 +56,7 @@ internal sealed class DeckForm : Form
     private readonly ToolStripDropDownButton _sniperButton = new("🎯 Sniper") { Visible = false };
     private readonly bool[] _hasSniper = new bool[Accounts];
     private readonly ToolStripButton _fullscreenButton = new("⛶ Tela cheia");
-    private readonly ToolStripDropDownButton _ultraButton = new("⚡ ULTRA");
+    private readonly ToolStripSplitButton _ultraButton = new("⚡ ULTRA");
     private readonly ToolStripStatusLabel _ram = new();
     private readonly ToolStripStatusLabel _livesStatus = new();
     private readonly ToolStripStatusLabel _voteStatus = new();
@@ -101,7 +101,10 @@ internal sealed class DeckForm : Form
         BuildStatus();
         for (int i = 0; i < Accounts; i++)
         {
-            var pane = new AccountPane(i) { AccountName = _config.AccountNames[i], ReduceMotion = _config.ReduceMotion };
+            var pane = new AccountPane(i)
+            {
+                AccountName = _config.AccountNames[i], ReduceMotion = _config.ReduceMotion, Ultra = _config.Ultra,
+            };
             pane.FocusRequested += p => ToggleFocus(p.Index);
             pane.ReloadRequested += p => p.Reload();
             pane.FullscreenRequested += _ => ToggleFullscreen();
@@ -188,9 +191,12 @@ internal sealed class DeckForm : Form
         _sniperButton.DropDownOpening += (_, _) => FillSniperMenu();
         _sniperButton.DropDownItems.Add("…");
         _ultraButton.Alignment = ToolStripItemAlignment.Right;
-        _ultraButton.ToolTipText = "Modo ULTRA Economia do jogo (ULTRA Battery Saver): o jogo inteiro sai da tela e fica só uma " +
-                                   "caixa com o XP, o Gold, os drops e os shinies da sessão. A caça continua. Também tem o menos animações";
+        _ultraButton.ToolTipText = "ULTRA em todas as contas: o Modo ULTRA Economia do jogo (ULTRA Battery Saver). O jogo inteiro " +
+                                   "sai da tela e fica só uma caixa com o XP, o Gold, os drops e os shinies da sessão; a caça continua. " +
+                                   "Na setinha, o menos animações";
+        _ultraButton.ButtonClick += async (_, _) => await SetUltraAsync(!_config.Ultra);
         _ultraButton.DropDownOpening += (_, _) => FillUltraMenu();
+        ShowUltra();
         _ultraButton.DropDownItems.Add("…");
         _bar.Items.Add(_fullscreenButton);
         _bar.Items.Add(_ultraButton);
@@ -640,29 +646,20 @@ internal sealed class DeckForm : Form
         }
     }
 
-    /// <summary>
-    /// Ligar/desligar o Modo ULTRA Economia do jogo em todas as contas, uma linha por conta com o estado
-    /// dela (clicar troca só ela) e, embaixo, o menos animações.
-    /// </summary>
-    private async void FillUltraMenu()
+    /// <summary>O ⚡ ULTRA na barra: laranja com "ligado", como o eco.</summary>
+    private void ShowUltra()
+    {
+        _ultraButton.Text = _config.Ultra ? "⚡ ULTRA ligado" : "⚡ ULTRA";
+        _ultraButton.ForeColor = _config.Ultra ? Theme.Vote : Theme.Text;
+    }
+
+    /// <summary>O ULTRA (o mesmo do botão) e, embaixo, o menos animações.</summary>
+    private void FillUltraMenu()
     {
         var items = _ultraButton.DropDownItems;
         items.Clear();
-        items.Add("Ligar o ULTRA em todas as contas", null, async (_, _) => await SetUltraAsync(null, true));
-        items.Add("Desligar o ULTRA em todas as contas", null, async (_, _) => await SetUltraAsync(null, false));
-        items.Add(new ToolStripSeparator());
-        var lines = new List<(int Index, ToolStripMenuItem Item)>();
-        for (int i = 0; i < Accounts; i++)
-        {
-            if (_panes[i].Off)
-            {
-                items.Add(new ToolStripMenuItem($"{_config.AccountNames[i]}: conta desligada") { Enabled = false });
-                continue;
-            }
-            var item = new ToolStripMenuItem($"{_config.AccountNames[i]}: conferindo…") { Enabled = false };
-            items.Add(item);
-            lines.Add((i, item));
-        }
+        items.Add(_config.Ultra ? "Desligar o ULTRA" : "Ligar o ULTRA (em todas as contas)", null,
+            async (_, _) => await SetUltraAsync(!_config.Ultra));
         items.Add(new ToolStripSeparator());
         var motion = new ToolStripMenuItem("🐢 Menos animações (no jogo normal e na tela de login)")
         {
@@ -672,36 +669,23 @@ internal sealed class DeckForm : Form
         };
         motion.Click += async (_, _) => await SetReduceMotionAsync(!_config.ReduceMotion);
         items.Add(motion);
-        foreach (var (index, item) in lines)
-        {
-            var state = await _panes[index].GetUltraAsync();
-            item.Text = $"{_config.AccountNames[index]}: " + state switch
-            {
-                "ligado" => "ULTRA ligado",
-                "escolhido" => "ULTRA liga quando entrar no jogo",
-                "normal" => "jogo normal",
-                "fora" => "fora do jogo",
-                _ => "o jogo não respondeu (recarregue a conta)",
-            };
-            if (state is null)
-                continue;
-            bool on = state is "ligado" or "escolhido";
-            item.Checked = on;
-            item.Enabled = true;
-            item.Click += async (_, _) => await SetUltraAsync(index, !on);
-        }
     }
 
-    /// <summary>Liga ou desliga o ULTRA numa conta (ou em todas, com <paramref name="only"/> nulo), na hora.</summary>
-    private async Task SetUltraAsync(int? only, bool on)
+    /// <summary>
+    /// Liga ou desliga o ULTRA em todas as contas, na hora. Ligado, vale também para a conta que recarrega ou
+    /// é ligada depois (ela volta ao ULTRA sozinha).
+    /// </summary>
+    private async Task SetUltraAsync(bool on)
     {
+        _config.Ultra = on;
+        ShowUltra();
+        SaveConfig();
         var failed = new List<string>();
-        for (int i = 0; i < Accounts; i++)
+        foreach (var pane in _panes)
         {
-            if (_panes[i].Off || only is int one && one != i)
-                continue;
-            if (!await _panes[i].SetUltraAsync(on))
-                failed.Add(_config.AccountNames[i]);
+            pane.Ultra = on;
+            if (!pane.Off && !await pane.SetUltraAsync(on))
+                failed.Add(pane.AccountName);
         }
         if (failed.Count > 0)
             MessageBox.Show(this,
@@ -1556,8 +1540,9 @@ internal sealed class DeckForm : Form
                 && _config.ReduceMotion,
                 $"ao abrir={motionStart} desligado={motionOff} religado={motionOn}");
 
-            // ULTRA: o deck liga pelo interruptor das Configurações do jogo e desliga pelo "Voltar ao jogo" da
-            // caixa, na hora; fora do jogo (a 4ª, no portal) só guarda a escolha. O jogo-teste ganha essas peças.
+            // ULTRA: o botão liga em todas pelo interruptor das Configurações do jogo e desliga pelo "Voltar ao
+            // jogo" da caixa, na hora; fora do jogo (a 4ª, no portal) só guarda a escolha. Ligado, a conta que
+            // recarrega volta a ele mesmo se tinha saído. O jogo-teste ganha as peças do jogo.
             const string FakeUltra = """
                 (() => {
                   localStorage.removeItem('cfg-ultra');
@@ -1583,16 +1568,25 @@ internal sealed class DeckForm : Form
             await Eval(_panes[3], "document.querySelector('#app').classList.add('hidden'); 1");
             async Task<string> Ultra() => string.Join(",", await Task.WhenAll(_panes.Select(p => p.GetUltraAsync())));
             var ultraStart = await Ultra();
-            await SetUltraAsync(null, true);
+            await SetUltraAsync(true);
             var ultraOn = await Ultra();
-            await SetUltraAsync(1, false);
-            var ultraOne = await Ultra();
-            await SetUltraAsync(null, false);
+            string buttonOn = _ultraButton.Text;
+            await Eval(_panes[2], "localStorage.setItem('cfg-ultra', '0'); 1");
+            _panes[2].Reload();
+            await Task.Delay(500);
+            await WaitFor(() => _panes[2].Status == PaneStatus.Ok, 15);
+            string? reloaded = null;
+            for (int i = 0; i < 20 && reloaded != "escolhido"; i++)
+            {
+                await Task.Delay(250);
+                reloaded = await _panes[2].GetUltraAsync();
+            }
+            await SetUltraAsync(false);
             var ultraOff = await Ultra();
-            Check("ULTRA do jogo liga e desliga na hora (todas, só uma, e fora do jogo guarda a escolha)",
-                ultraStart == "normal,normal,normal,fora" && ultraOn == "ligado,ligado,ligado,escolhido"
-                && ultraOne == "ligado,normal,ligado,escolhido" && ultraOff == "normal,normal,normal,fora",
-                $"antes={ultraStart} ligado={ultraOn} só a 2ª desligada={ultraOne} desligado={ultraOff}");
+            Check("ULTRA do jogo liga e desliga em todas na hora, e a conta que recarrega volta a ele",
+                ultraStart == "normal,normal,normal,fora" && ultraOn == "ligado,ligado,ligado,escolhido" && reloaded == "escolhido"
+                && ultraOff == "normal,normal,fora,fora" && buttonOn == "⚡ ULTRA ligado" && _ultraButton.Text == "⚡ ULTRA" && !_config.Ultra,
+                $"antes={ultraStart} ligado={ultraOn} 3ª recarregada={reloaded} desligado={ultraOff} botão='{buttonOn}'→'{_ultraButton.Text}'");
             foreach (var pane in _panes)
                 await Eval(pane, "document.querySelectorAll('#app, #btn-config, #modal, #ultra').forEach(e => e.remove()); 1");
 
