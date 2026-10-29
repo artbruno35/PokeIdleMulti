@@ -95,6 +95,7 @@ internal sealed class LivesWindow : Form
     private LivesWindow(string accountName)
     {
         Text = $"Lives — {accountName}";
+        Icon = Theme.AppIcon;
         BackColor = Theme.Back;
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;

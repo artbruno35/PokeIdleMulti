@@ -8,6 +8,7 @@ internal static class Prompt
         using var form = new Form
         {
             Text = title,
+            Icon = Theme.AppIcon,
             FormBorderStyle = FormBorderStyle.FixedDialog,
             MaximizeBox = false,
             MinimizeBox = false,

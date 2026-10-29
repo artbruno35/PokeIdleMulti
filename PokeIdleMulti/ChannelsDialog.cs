@@ -10,6 +10,7 @@ internal sealed class ChannelsDialog : Form
     public ChannelsDialog(IEnumerable<string> twitch, IEnumerable<string> kick, TwitchMode twitchMode)
     {
         Text = "Canais das lives";
+        Icon = Theme.AppIcon;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;

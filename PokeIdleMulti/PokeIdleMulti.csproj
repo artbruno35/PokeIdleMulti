@@ -12,10 +12,13 @@
     <Product>PokeIdle Deck</Product>
     <!-- O exe vai sozinho para a pasta do deck: a WebView2Loader.dll precisa ir dentro dele. -->
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- O ícone do exe (Explorer, atalho, barra de tarefas); embutido também, para as janelas. -->
+    <ApplicationIcon>deck.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+    <EmbeddedResource Include="deck.ico" LogicalName="deck.ico" />
   </ItemGroup>
 
 </Project>

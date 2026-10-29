@@ -16,6 +16,7 @@ internal sealed class PopupWindow : Form
     {
         _closeOnDeactivate = closeOnDeactivate;
         Text = "PokeIdle Deck";
+        Icon = Theme.AppIcon;
         BackColor = Theme.Back;
         StartPosition = FormStartPosition.Manual;
         ClientSize = size;

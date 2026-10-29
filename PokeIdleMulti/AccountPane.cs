@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -25,7 +26,7 @@ internal sealed class AccountPane : UserControl
     private readonly ToolStripButton _mute = new("🔊");
     private readonly ToolStripButton _vote = new("🗳 Votar") { Visible = false };
     private readonly ToolStripDropDownButton _kick = new("kick") { Enabled = false };
-    private readonly ToolStripButton _power = new("⏻");
+    private readonly ToolStripButton _power = new(Theme.PowerGlyph) { Font = Theme.Symbols };
     private readonly Label _offNote = new()
     {
         Dock = DockStyle.Fill,
@@ -224,6 +225,59 @@ internal sealed class AccountPane : UserControl
         }
     }
 
+    // Modo ULTRA Economia do jogo ("ULTRA Battery Saver"): a escolha fica no localStorage ("cfg-ultra"),
+    // e o jogo acende a classe "modo-ultra" no <html> quando entra com ela ligada.
+    // ligado: na tela; escolhido: liga quando entrar no jogo (ou quando a conta tiver equipe); normal; fora.
+    private const string UltraStateScript =
+        "(() => document.documentElement.classList.contains('modo-ultra') ? 'ligado'" +
+        " : localStorage.getItem('cfg-ultra') === '1' ? 'escolhido'" +
+        " : document.querySelector('#app:not(.hidden)') ? 'normal' : 'fora')()";
+
+    // Liga pelo mesmo caminho do jogador (Configurações → interruptor do ULTRA, que fecha a janela sozinho)
+    // e desliga pelo "Voltar ao jogo" da caixa. Fora do jogo, ou com a conta ainda sem equipe, só fica a
+    // escolha: o próprio jogo liga ao entrar.
+    private const string SetUltraScript =
+        "(on => { const ultra = () => document.documentElement.classList.contains('modo-ultra');" +
+        " if (!on) { document.querySelector('#ultra-sair')?.click(); localStorage.setItem('cfg-ultra', '0'); return !ultra(); }" +
+        " if (ultra()) return true;" +
+        " const app = document.querySelector('#app');" +
+        " if (!app || app.classList.contains('hidden') || localStorage.getItem('cfg-ultra') === '1') { localStorage.setItem('cfg-ultra', '1'); return true; }" +
+        " document.querySelector('#btn-config')?.click(); document.querySelector('#cfg-ultra')?.click(); return ultra(); })";
+
+    /// <summary>A página é o jogo (deck.test: o jogo do autoteste).</summary>
+    private bool OnGame => Core is not null && Uri.TryCreate(Core.Source, UriKind.Absolute, out var uri)
+        && uri.Host is "pokeidle.io" or "deck.test";
+
+    /// <summary>"ligado", "escolhido", "normal" ou "fora"; null se a página não é o jogo ou não respondeu.</summary>
+    public async Task<string?> GetUltraAsync()
+    {
+        if (Off || !OnGame)
+            return null;
+        try
+        {
+            return JsonSerializer.Deserialize<string>(await WebView.ExecuteScriptAsync(UltraStateScript));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Liga ou desliga o Modo ULTRA Economia do jogo nesta conta, na hora (sem recarregar).</summary>
+    public async Task<bool> SetUltraAsync(bool on)
+    {
+        if (Off || !OnGame)
+            return false;
+        try
+        {
+            return await WebView.ExecuteScriptAsync($"{SetUltraScript}({(on ? "true" : "false")})") == "true";
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Confere se a conta está parada na tela de login. Ali o jogo mantém o captcha do Cloudflare, que
     /// refaz o desafio sozinho e vai juntando memória (medido: +60 MB a cada 30 s no começo).
@@ -247,7 +301,7 @@ internal sealed class AccountPane : UserControl
         _loginScreen = login;
         _info.ToolTipText = login
             ? "Na tela de login o jogo mantém o captcha do Cloudflare, que refaz o desafio sozinho e vai juntando " +
-              "memória (centenas de MB em poucas horas). Entre na conta ou desligue-a no ⏻."
+              "memória (centenas de MB em poucas horas). Entre na conta ou desligue-a no botão de desligar, no canto direito do cabeçalho."
             : null;
         RefreshHeader();
     }
@@ -320,8 +374,8 @@ internal sealed class AccountPane : UserControl
     public void SetOff(bool off)
     {
         Off = off;
-        _offNote.Text = $"⏻  {AccountName} desligada\n\nNada roda nela: jogo, extensões, lives e voto ficam parados.\n" +
-                        "Clique em ⏻ no cabeçalho para ligar.";
+        _offNote.Text = $"{AccountName} desligada\n\nNada roda nela: jogo, extensões, lives e voto ficam parados.\n" +
+                        "Clique no botão de ligar, no canto direito do cabeçalho, para ligar.";
         _offNote.Visible = off;
         WebView.Visible = !off;
         _reload.Visible = _mute.Visible = _kick.Visible = !off;
@@ -407,7 +461,7 @@ internal sealed class AccountPane : UserControl
         };
         _info.Text = DateTime.Now < _noteUntil ? "· " + _note
             : _statusText is not null ? "· " + _statusText
-            : _loginScreen ? "· na tela de login: entre ou desligue no ⏻"
+            : _loginScreen ? "· na tela de login: entre ou desligue a conta"
             : StartedAt is DateTime started ? "· rodando há " + FormatUptime(DateTime.Now - started)
             : "";
     }

@@ -46,7 +46,8 @@ internal sealed class DeckForm : Form
     private readonly ToolStripButton _columnsButton = new("Colunas");
     private readonly ToolStripButton _focusButton = new("Foco");
     private readonly ToolStripButton[] _accountButtons = new ToolStripButton[Accounts];
-    private readonly ToolStripSplitButton _echoButton = new("🔁 Eco");
+    // ⇄ e ⚡, e não 🔁 e 🔋: na barra o Windows desenha esses dois emojis como quadrados.
+    private readonly ToolStripSplitButton _echoButton = new("⇄ Eco");
     private bool _echo;
     private int _lastClicked;
     private readonly ToolStripDropDownButton _livesButton = new("Lives");
@@ -55,7 +56,7 @@ internal sealed class DeckForm : Form
     private readonly ToolStripDropDownButton _sniperButton = new("🎯 Sniper") { Visible = false };
     private readonly bool[] _hasSniper = new bool[Accounts];
     private readonly ToolStripButton _fullscreenButton = new("⛶ Tela cheia");
-    private readonly ToolStripButton _motionButton = new("🐢 Menos animações");
+    private readonly ToolStripDropDownButton _ultraButton = new("⚡ ULTRA");
     private readonly ToolStripStatusLabel _ram = new();
     private readonly ToolStripStatusLabel _livesStatus = new();
     private readonly ToolStripStatusLabel _voteStatus = new();
@@ -90,6 +91,7 @@ internal sealed class DeckForm : Form
             _layoutBeforeFocus = _config.Layout;
 
         Text = "PokeIdle Deck";
+        Icon = Theme.AppIcon;
         BackColor = Theme.Back;
         ForeColor = Theme.Text;
         KeyPreview = true;
@@ -185,13 +187,13 @@ internal sealed class DeckForm : Form
         _sniperButton.ToolTipText = "Liga ou desliga o Rotom Sniper (compras automáticas no mercado) em todas as contas";
         _sniperButton.DropDownOpening += (_, _) => FillSniperMenu();
         _sniperButton.DropDownItems.Add("…");
-        _motionButton.Alignment = ToolStripItemAlignment.Right;
-        _motionButton.ToolTipText = "Menos animações no jogo: o próprio jogo desliga as que rodam sem parar (selos pulsando, " +
-                                    "halos, cartas). Gasta bem menos CPU e placa de vídeo. Desmarque para ver todas";
-        _motionButton.Checked = _config.ReduceMotion;
-        _motionButton.Click += async (_, _) => await SetReduceMotionAsync(!_config.ReduceMotion);
+        _ultraButton.Alignment = ToolStripItemAlignment.Right;
+        _ultraButton.ToolTipText = "Modo ULTRA Economia do jogo (ULTRA Battery Saver): o jogo inteiro sai da tela e fica só uma " +
+                                   "caixa com o XP, o Gold, os drops e os shinies da sessão. A caça continua. Também tem o menos animações";
+        _ultraButton.DropDownOpening += (_, _) => FillUltraMenu();
+        _ultraButton.DropDownItems.Add("…");
         _bar.Items.Add(_fullscreenButton);
-        _bar.Items.Add(_motionButton);
+        _bar.Items.Add(_ultraButton);
         _bar.Items.Add(_extensionsButton);
         _bar.Items.Add(_sniperButton);
         _bar.Items.Add(_livesButton);
@@ -524,9 +526,10 @@ internal sealed class DeckForm : Form
         {
             var kick = window.KickChannels.ToList();
             var shut = KickShut(index);
-            // ▶ tocando, ⏸ parada (o deck manda tocar e, se continuar, recarrega: ⟳ quantas vezes).
+            // ▶ tocando, ‖ parada (o deck manda tocar e, se continuar, recarrega: ⟳ quantas vezes). O ‖ e não o
+            // ⏸: esse só existe nas fontes de emoji, que o desenham como um botão quadrado.
             var playback = window.KickPlayback.Select(k => k.Channel
-                + (k.Playing == true ? " ▶" : k.Playing == false ? " ⏸" : "") + (k.Reloads > 0 ? $" ⟳{k.Reloads}" : ""));
+                + (k.Playing == true ? " ▶" : k.Playing == false ? " ‖" : "") + (k.Reloads > 0 ? $" ⟳{k.Reloads}" : ""));
             if (_config.KickChannels.Count > 0)
                 parts.Add(kick.Count > 0 ? "Kick no ar: " + string.Join(", ", playback)
                     : _config.Kick[index].Slots == 0 ? "Kick: todas fechadas no kick"
@@ -603,7 +606,7 @@ internal sealed class DeckForm : Form
             }
             _ram.Text = $"RAM ~{Gb(game + lives + other)} GB: jogo {Gb(game)} · lives {Gb(lives)} · navegador {Gb(other)}";
             _ram.ToolTipText = $"{count} processos do navegador embutido (memória privada, a que pesa no PC).\n" +
-                               "Para aliviar: feche lives da Kick no botão kick de cada conta, ou desligue no ⏻ as contas que não está usando.";
+                               "Para aliviar: feche lives da Kick no botão kick de cada conta, ou desligue (no canto direito do cabeçalho) as contas que não está usando.";
         }
         catch
         {
@@ -629,13 +632,83 @@ internal sealed class DeckForm : Form
     private async Task SetReduceMotionAsync(bool reduce)
     {
         _config.ReduceMotion = reduce;
-        _motionButton.Checked = reduce;
         SaveConfig();
         foreach (var pane in _panes)
         {
             pane.ReduceMotion = reduce;
             await pane.ApplyReduceMotionAsync();
         }
+    }
+
+    /// <summary>
+    /// Ligar/desligar o Modo ULTRA Economia do jogo em todas as contas, uma linha por conta com o estado
+    /// dela (clicar troca só ela) e, embaixo, o menos animações.
+    /// </summary>
+    private async void FillUltraMenu()
+    {
+        var items = _ultraButton.DropDownItems;
+        items.Clear();
+        items.Add("Ligar o ULTRA em todas as contas", null, async (_, _) => await SetUltraAsync(null, true));
+        items.Add("Desligar o ULTRA em todas as contas", null, async (_, _) => await SetUltraAsync(null, false));
+        items.Add(new ToolStripSeparator());
+        var lines = new List<(int Index, ToolStripMenuItem Item)>();
+        for (int i = 0; i < Accounts; i++)
+        {
+            if (_panes[i].Off)
+            {
+                items.Add(new ToolStripMenuItem($"{_config.AccountNames[i]}: conta desligada") { Enabled = false });
+                continue;
+            }
+            var item = new ToolStripMenuItem($"{_config.AccountNames[i]}: conferindo…") { Enabled = false };
+            items.Add(item);
+            lines.Add((i, item));
+        }
+        items.Add(new ToolStripSeparator());
+        var motion = new ToolStripMenuItem("🐢 Menos animações (no jogo normal e na tela de login)")
+        {
+            Checked = _config.ReduceMotion,
+            ToolTipText = "O próprio jogo desliga as animações que rodam sem parar (selos pulsando, halos, cartas). " +
+                          "Gasta bem menos CPU e placa de vídeo. Desmarque para ver todas",
+        };
+        motion.Click += async (_, _) => await SetReduceMotionAsync(!_config.ReduceMotion);
+        items.Add(motion);
+        foreach (var (index, item) in lines)
+        {
+            var state = await _panes[index].GetUltraAsync();
+            item.Text = $"{_config.AccountNames[index]}: " + state switch
+            {
+                "ligado" => "ULTRA ligado",
+                "escolhido" => "ULTRA liga quando entrar no jogo",
+                "normal" => "jogo normal",
+                "fora" => "fora do jogo",
+                _ => "o jogo não respondeu (recarregue a conta)",
+            };
+            if (state is null)
+                continue;
+            bool on = state is "ligado" or "escolhido";
+            item.Checked = on;
+            item.Enabled = true;
+            item.Click += async (_, _) => await SetUltraAsync(index, !on);
+        }
+    }
+
+    /// <summary>Liga ou desliga o ULTRA numa conta (ou em todas, com <paramref name="only"/> nulo), na hora.</summary>
+    private async Task SetUltraAsync(int? only, bool on)
+    {
+        var failed = new List<string>();
+        for (int i = 0; i < Accounts; i++)
+        {
+            if (_panes[i].Off || only is int one && one != i)
+                continue;
+            if (!await _panes[i].SetUltraAsync(on))
+                failed.Add(_config.AccountNames[i]);
+        }
+        if (failed.Count > 0)
+            MessageBox.Show(this,
+                $"Não consegui {(on ? "ligar" : "desligar")} o ULTRA em: {string.Join(", ", failed)}.\n\n" +
+                "O deck usa o interruptor do próprio jogo (Configurações → Desempenho → Modo ULTRA Economia): " +
+                "recarregue a conta (⟳ no cabeçalho) e tente de novo, ou ligue por lá.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     // ---------- Ações das contas ----------
@@ -779,7 +852,7 @@ internal sealed class DeckForm : Form
         _echo = on;
         if (on)
             SetZoomAll(_panes[_lastClicked].WebView.ZoomFactor);
-        _echoButton.Text = on ? "🔁 Eco ligado" : "🔁 Eco";
+        _echoButton.Text = on ? "⇄ Eco ligado" : "⇄ Eco";
         _echoButton.ForeColor = on ? Theme.Vote : Theme.Text;
     }
 
@@ -1480,8 +1553,48 @@ internal sealed class DeckForm : Form
             var motionOn = await Motion();
             Check("menos animações no jogo (e o botão liga e desliga na hora)",
                 motionStart == "true,true,true,true" && motionOff == "false,false,false,false" && motionOn == "true,true,true,true"
-                && _motionButton.Checked && _config.ReduceMotion,
+                && _config.ReduceMotion,
                 $"ao abrir={motionStart} desligado={motionOff} religado={motionOn}");
+
+            // ULTRA: o deck liga pelo interruptor das Configurações do jogo e desliga pelo "Voltar ao jogo" da
+            // caixa, na hora; fora do jogo (a 4ª, no portal) só guarda a escolha. O jogo-teste ganha essas peças.
+            const string FakeUltra = """
+                (() => {
+                  localStorage.removeItem('cfg-ultra');
+                  const ultra = on => {
+                    localStorage.setItem('cfg-ultra', on ? '1' : '0');
+                    document.documentElement.classList.toggle('modo-ultra', on);
+                    document.querySelector('#ultra').innerHTML = on ? '<button id=ultra-sair>Voltar ao jogo</button>' : '';
+                    if (on) document.querySelector('#ultra-sair').onclick = () => ultra(false);
+                  };
+                  document.body.insertAdjacentHTML('beforeend', '<div id=app></div><button id=btn-config>Config</button><div id=modal></div><div id=ultra></div>');
+                  document.querySelector('#btn-config').onclick = () => {
+                    document.querySelector('#modal').innerHTML = '<button id=cfg-ultra>ULTRA</button>';
+                    document.querySelector('#cfg-ultra').onclick = () => {
+                      ultra(localStorage.getItem('cfg-ultra') !== '1');
+                      document.querySelector('#modal').innerHTML = '';
+                    };
+                  };
+                  return 1;
+                })()
+                """;
+            foreach (var pane in _panes)
+                await Eval(pane, FakeUltra);
+            await Eval(_panes[3], "document.querySelector('#app').classList.add('hidden'); 1");
+            async Task<string> Ultra() => string.Join(",", await Task.WhenAll(_panes.Select(p => p.GetUltraAsync())));
+            var ultraStart = await Ultra();
+            await SetUltraAsync(null, true);
+            var ultraOn = await Ultra();
+            await SetUltraAsync(1, false);
+            var ultraOne = await Ultra();
+            await SetUltraAsync(null, false);
+            var ultraOff = await Ultra();
+            Check("ULTRA do jogo liga e desliga na hora (todas, só uma, e fora do jogo guarda a escolha)",
+                ultraStart == "normal,normal,normal,fora" && ultraOn == "ligado,ligado,ligado,escolhido"
+                && ultraOne == "ligado,normal,ligado,escolhido" && ultraOff == "normal,normal,normal,fora",
+                $"antes={ultraStart} ligado={ultraOn} só a 2ª desligada={ultraOne} desligado={ultraOff}");
+            foreach (var pane in _panes)
+                await Eval(pane, "document.querySelectorAll('#app, #btn-config, #modal, #ultra').forEach(e => e.remove()); 1");
 
             // Conta parada na tela de login: o cabeçalho avisa (o captcha de lá vai juntando memória).
             await Eval(_panes[1], "document.body.insertAdjacentHTML('beforeend', '<div id=portal></div><div id=login></div>'); 1");

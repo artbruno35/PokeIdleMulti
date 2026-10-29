@@ -32,6 +32,7 @@ internal sealed class ExtensionsDialog : Form
         _changed = changed;
 
         Text = "Extensões das contas";
+        Icon = Theme.AppIcon;
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(720, 440);
         MinimumSize = new Size(600, 320);
@@ -178,6 +179,7 @@ internal sealed class ExtensionsDialog : Form
         using var pick = new Form
         {
             Text = "Importar do Chrome",
+            Icon = Theme.AppIcon,
             StartPosition = FormStartPosition.CenterParent,
             ClientSize = new Size(420, 360),
             ShowInTaskbar = false,
@@ -247,6 +249,7 @@ internal sealed class ExtensionsDialog : Form
         using var pick = new Form
         {
             Text = $"Trazer configurações para {target.AccountName}",
+            Icon = Theme.AppIcon,
             StartPosition = FormStartPosition.CenterParent,
             ClientSize = new Size(520, 300),
             ShowInTaskbar = false,
