@@ -47,9 +47,11 @@ internal sealed class DeckForm : Form
     private readonly ToolStripButton _focusButton = new("Foco");
     private readonly ToolStripButton[] _accountButtons = new ToolStripButton[Accounts];
     // ⇄ e ⚡, e não 🔁 e 🔋: na barra o Windows desenha esses dois emojis como quadrados.
-    private readonly ToolStripSplitButton _echoButton = new("⇄ Eco");
+    private readonly ToolStripButton _echoButton = new("⇄ Eco");
     private bool _echo;
-    private int _lastClicked;
+    private readonly ToolStripButton _zoomOutButton = new("−");
+    private readonly ToolStripDropDownButton _zoomButton = new("Zoom 100%");
+    private readonly ToolStripButton _zoomInButton = new("+");
     private readonly ToolStripDropDownButton _livesButton = new("Lives");
     private readonly ToolStripDropDownButton _kickButton = new("💰 Pontos da Kick") { Visible = false };
     private readonly ToolStripButton _extensionsButton = new("🧩 Extensões");
@@ -64,6 +66,8 @@ internal sealed class DeckForm : Form
     private readonly DateTime[] _voteRefreshAt = new DateTime[Accounts];
     private readonly bool[] _voteBusy = new bool[Accounts];
     private readonly PopupWindow?[] _voteWindows = new PopupWindow?[Accounts];
+    private readonly RestockWindow?[] _restockWindows = new RestockWindow?[Accounts];
+    private readonly bool[] _restockBusy = new bool[Accounts];
     private string? _topIdleGameId;
     private DateTime _topIdleRetryAt;
     private bool _topIdleLookup;
@@ -89,6 +93,9 @@ internal sealed class DeckForm : Form
         _store = new ExtensionStore(_root);
         if (_config.Layout != DeckLayout.Focus)
             _layoutBeforeFocus = _config.Layout;
+        // O zoom é um só para todas as contas. Do tempo em que cada uma tinha o seu, fica o da primeira ligada.
+        var zoom = _config.Zoom[Enumerable.Range(0, Accounts).FirstOrDefault(i => !_config.Off[i])];
+        Array.Fill(_config.Zoom, zoom);
 
         Text = "PokeIdle Deck";
         Icon = Theme.AppIcon;
@@ -104,7 +111,10 @@ internal sealed class DeckForm : Form
             var pane = new AccountPane(i)
             {
                 AccountName = _config.AccountNames[i], ReduceMotion = _config.ReduceMotion, Ultra = _config.Ultra,
+                RestockConfig = _config.Restock[i],
             };
+            pane.ShowRestock(null);
+            pane.RestockRequested += p => ShowRestockWindow(p.Index);
             pane.FocusRequested += p => ToggleFocus(p.Index);
             pane.ReloadRequested += p => p.Reload();
             pane.FullscreenRequested += _ => ToggleFullscreen();
@@ -165,13 +175,22 @@ internal sealed class DeckForm : Form
             _bar.Items.Add(button);
         }
 
-        _echoButton.ToolTipText = "Eco: um clique numa conta se repete nas outras (no mesmo botão). " +
-                                  "A setinha tem o zoom igual em todas as contas";
-        _echoButton.ButtonClick += (_, _) => SetEcho(!_echo);
-        _echoButton.DropDownOpening += (_, _) => FillEchoMenu();
-        _echoButton.DropDownItems.Add("…");
+        _echoButton.ToolTipText = "Eco: um clique numa conta se repete nas outras (no mesmo botão)";
+        _echoButton.Click += (_, _) => SetEcho(!_echo);
         _bar.Items.Add(new ToolStripSeparator());
         _bar.Items.Add(_echoButton);
+
+        _zoomOutButton.ToolTipText = "Diminuir o zoom de todas as contas";
+        _zoomInButton.ToolTipText = "Aumentar o zoom de todas as contas";
+        _zoomButton.ToolTipText = "Zoom de todas as contas";
+        _zoomOutButton.Font = _zoomInButton.Font = new Font(_bar.Font.FontFamily, 11f, FontStyle.Bold);
+        _zoomOutButton.Click += (_, _) => StepZoom(-1);
+        _zoomInButton.Click += (_, _) => StepZoom(1);
+        _zoomButton.DropDownOpening += (_, _) => FillZoomMenu();
+        _zoomButton.DropDownItems.Add("…");
+        _bar.Items.Add(new ToolStripSeparator());
+        _bar.Items.AddRange(new ToolStripItem[] { _zoomOutButton, _zoomButton, _zoomInButton });
+        ShowZoom();
 
         // Itens à direita entram da direita para a esquerda.
         _fullscreenButton.Alignment = _extensionsButton.Alignment = _livesButton.Alignment = ToolStripItemAlignment.Right;
@@ -566,6 +585,9 @@ internal sealed class DeckForm : Form
         if (_seconds % 30 == 0)
             foreach (var pane in _panes)
                 _ = pane.CheckLoginScreenAsync();
+        if (_seconds % 2 == 0)
+            foreach (var pane in _panes.Where(p => p.RestockConfig.On || _restockWindows[p.Index] is not null))
+                _ = RefreshRestockAsync(pane.Index);
         if (!_selfTest && !_kickChecking && DateTime.Now >= _kickCheckAt && _lives.Any(l => l is not null))
             _ = CheckKickAsync();
         if (!_selfTest && _seconds % 30 == 15)
@@ -736,6 +758,7 @@ internal sealed class DeckForm : Form
                 _extensionWindows.Remove(key);
             }
             _votes[index] = null;
+            _restockWindows[index]?.Close();
             pane.SetOff(true);
         }
         else
@@ -754,6 +777,54 @@ internal sealed class DeckForm : Form
                 await OpenLivesAsync(index);
         }
         UpdateBar();
+    }
+
+    // ---------- Recompra ----------
+
+    /// <summary>A janela da recompra da conta (o carrinho no cabeçalho); aberta de novo, só vem para a frente.</summary>
+    private void ShowRestockWindow(int index)
+    {
+        if (_restockWindows[index] is RestockWindow open)
+        {
+            open.Activate();
+            return;
+        }
+        var pane = _panes[index];
+        var window = new RestockWindow(pane.AccountName, pane.RestockConfig);
+        window.Changed += () =>
+        {
+            SaveConfig();
+            _ = ApplyRestockAsync(index);
+        };
+        window.FormClosed += (_, _) => _restockWindows[index] = null;
+        _restockWindows[index] = window;
+        window.Show(this);
+        _ = RefreshRestockAsync(index);
+    }
+
+    /// <summary>A configuração nova vale na hora: vai para a página e o carrinho e a janela mostram o resultado.</summary>
+    private async Task ApplyRestockAsync(int index)
+    {
+        await _panes[index].PushRestockAsync();
+        await RefreshRestockAsync(index);
+    }
+
+    /// <summary>Lê da página o estoque e o registro, para o carrinho do cabeçalho e a janela aberta.</summary>
+    private async Task RefreshRestockAsync(int index)
+    {
+        if (_restockBusy[index])
+            return;
+        _restockBusy[index] = true;
+        try
+        {
+            var status = await _panes[index].ReadRestockAsync();
+            _panes[index].ShowRestock(status);
+            _restockWindows[index]?.ShowStatus(status);
+        }
+        finally
+        {
+            _restockBusy[index] = false;
+        }
     }
 
     private void RenameAccount(int index)
@@ -826,46 +897,56 @@ internal sealed class DeckForm : Form
         return popup;
     }
 
-    // ---------- Eco ----------
+    // ---------- Eco e zoom ----------
 
-    private static readonly double[] ZoomLevels = { 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25 };
+    private static readonly double[] ZoomLevels = { 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5 };
 
-    /// <summary>Ao ligar, todas as contas ficam com o zoom da última conta clicada.</summary>
-    private void SetEcho(bool on)
+    /// <summary>O zoom (o mesmo em todas as contas) no botão; − e + apagam nas pontas.</summary>
+    private void ShowZoom()
     {
-        _echo = on;
-        if (on)
-            SetZoomAll(_panes[_lastClicked].WebView.ZoomFactor);
-        _echoButton.Text = on ? "⇄ Eco ligado" : "⇄ Eco";
-        _echoButton.ForeColor = on ? Theme.Vote : Theme.Text;
+        double zoom = _config.Zoom[0];
+        _zoomButton.Text = $"Zoom {zoom * 100:0}%";
+        _zoomOutButton.Enabled = zoom > ZoomLevels[0] + 0.001;
+        _zoomInButton.Enabled = zoom < ZoomLevels[^1] - 0.001;
     }
 
-    private void FillEchoMenu()
+    /// <summary>O − e o +: o nível de zoom anterior ou o seguinte da lista.</summary>
+    private void StepZoom(int direction)
     {
-        var items = _echoButton.DropDownItems;
+        double zoom = _config.Zoom[0];
+        SetZoomAll(direction < 0
+            ? ZoomLevels.LastOrDefault(level => level < zoom - 0.001, ZoomLevels[0])
+            : ZoomLevels.FirstOrDefault(level => level > zoom + 0.001, ZoomLevels[^1]));
+    }
+
+    private void FillZoomMenu()
+    {
+        var items = _zoomButton.DropDownItems;
         items.Clear();
-        items.Add(_echo ? "Desligar o eco" : "Ligar o eco (um clique numa conta se repete nas outras)", null, (_, _) => SetEcho(!_echo));
-        items.Add(new ToolStripSeparator());
-        items.Add(new ToolStripMenuItem("Zoom igual em todas as contas:") { Enabled = false });
         foreach (var level in ZoomLevels)
         {
-            var item = new ToolStripMenuItem($"{level * 100:0}%") { Checked = _panes.All(p => Math.Abs(p.WebView.ZoomFactor - level) < 0.01) };
+            var item = new ToolStripMenuItem($"{level * 100:0}%") { Checked = Math.Abs(_config.Zoom[0] - level) < 0.01 };
             item.Click += (_, _) => SetZoomAll(level);
             items.Add(item);
         }
     }
 
+    /// <summary>O eco só repete cliques; o zoom vale para todas as contas com ele ligado ou não.</summary>
+    private void SetEcho(bool on)
+    {
+        _echo = on;
+        _echoButton.Text = on ? "⇄ Eco ligado" : "⇄ Eco";
+        _echoButton.ForeColor = on ? Theme.Vote : Theme.Text;
+    }
+
     /// <summary>
-    /// Zoom (Ctrl + roda) ou som de uma conta mudou. O WebView2 só avisa zoom mudado pela pessoa, nunca
-    /// o que o deck põe, então o eco espalhar o zoom não volta aqui.
+    /// Zoom (Ctrl + roda, Ctrl + 0) ou som de uma conta mudou. O zoom vale sempre para todas as contas. O WebView2
+    /// só avisa zoom mudado pela pessoa, nunca o que o deck põe, então espalhar o zoom não volta aqui.
     /// </summary>
     private void OnPaneSettingsChanged(AccountPane pane)
     {
-        _config.Zoom[pane.Index] = pane.WebView.ZoomFactor;
         _config.Muted[pane.Index] = pane.Muted;
-        // Com o eco ligado, o zoom de uma conta vale para todas.
-        if (_echo)
-            SetZoomAll(pane.WebView.ZoomFactor);
+        SetZoomAll(pane.WebView.ZoomFactor);
     }
 
     private void SetZoomAll(double zoom)
@@ -877,12 +958,12 @@ internal sealed class DeckForm : Form
                 pane.WebView.ZoomFactor = zoom;
             _config.Zoom[pane.Index] = zoom;
         }
+        ShowZoom();
     }
 
     /// <summary>Repete nas outras contas o clique feito numa; avisa no cabeçalho de quem não tem esse botão.</summary>
     private async Task EchoAsync(AccountPane source, Echo.Click click)
     {
-        _lastClicked = source.Index;
         if (!_echo)
             return;
         var script = Echo.ReplayScript(click);
@@ -1460,6 +1541,19 @@ internal sealed class DeckForm : Form
             "<button onclick='window.__mapa = (window.__mapa || 0) + 1'>Mapa</button> " +
             "<button onclick='window.__outro = (window.__outro || 0) + 1'>Outro</button></nav></body>");
         File.WriteAllText(Path.Combine(site, "twitch.html"), "<!doctype html><title>Twitch-teste</title>");
+        // As poções e os revives do espelho de itens do jogo (/assets/items.json), que a recompra lê.
+        Directory.CreateDirectory(Path.Combine(site, "assets"));
+        File.WriteAllText(Path.Combine(site, "assets", "items.json"), """
+            { "items": [
+              { "id": 200, "name": "Small Potion", "category": "heal", "npcPrice": 50, "healAmount": 60 },
+              { "id": 203, "name": "Hyper Potion", "category": "heal", "npcPrice": 800, "healAmount": 1000 },
+              { "id": 204, "name": "Ultimate Potion", "category": "heal", "npcPrice": 1500, "healAmount": 3000 },
+              { "id": 205, "name": "Revive", "category": "revive", "npcPrice": 600, "revivePct": 0.5 },
+              { "id": 206, "name": "Max Revive", "category": "revive", "npcPrice": 2500, "revivePct": 1 },
+              { "id": 207, "name": "Medicine", "category": "heal", "npcPrice": 0, "healAmount": 20 },
+              { "id": 1, "name": "Pedra", "category": "stone", "npcPrice": 5000 }
+            ] }
+            """);
         // Live de teste com vídeo "tocando" (o tempo anda); a do yetz fica parada, sem vídeo para tocar.
         File.WriteAllText(Path.Combine(site, "kick.html"),
             "<!doctype html><title>Kick-teste</title><video muted></video><div id=channel-chatroom><div id=chatroom-messages>msgs</div>botão dos pontos</div><script>" +
@@ -1600,6 +1694,80 @@ internal sealed class DeckForm : Form
                 loginInfo.Contains("tela de login") && !_panes[1].HeaderInfo.Contains("tela de login") && !_panes[0].HeaderInfo.Contains("tela de login"),
                 $"com login='{loginInfo}' sem='{_panes[1].HeaderInfo}'");
 
+            // Recompra: o script do deck pega o socket que o jogo abre para o próprio site. No jogo-teste ele não
+            // conecta, então o socket finge estar aberto, guarda o que seria mandado e recebe o welcome à mão.
+            // Ligada na conta 1 (Ultimate Potion, os valores de fábrica), ela arruma a fila do "Usar Poções" e
+            // compra o que falta, uma compra por vez; a conta 2, desligada, não compra nada.
+            const string FakeSocket = """
+                (() => {
+                  const ws = new WebSocket('wss://deck.test/');
+                  Object.defineProperty(ws, 'readyState', { get: () => 1 });
+                  window.__enviados = [];
+                  ws.send = d => window.__enviados.push(JSON.parse(d));
+                  window.__msg = o => ws.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(o) }));
+                  window.__msg({ t: 'welcome',
+                    catalogoBolas: [{ id: 1, nome: 'Poke Ball', priceGold: 20, compravel: true }, { id: 4, nome: 'Ultra Ball', priceGold: 300, compravel: true }],
+                    itensNossos: [{ id: 70070, name: 'Golden Potion', category: 'heal', npcPrice: 5000, healPct: 0.5 }],
+                    estado: { cheio: true, nick: 'teste', gold: 50000000, balls: { 4: 4000 }, items: { 204: 1000, 205: 50, 70070: 9999 },
+                      activeId: 7, automation: { autoPotion: true, potionIds: [200, 204], hpLimiar: 0.3 }, pokemons: [{ id: 7, maxHp: 2000 }] } });
+                  return 1;
+                })()
+                """;
+            const string SentScript = "JSON.stringify(window.__enviados.map(m => m.t === 'shop.buy' ? `${m.kind}:${m.id}x${m.qty}` : `fila:${m.potionIds}`))";
+            // O ExecuteScript devolve o texto em JSON: o JSON.stringify da página chega entre aspas.
+            async Task<string> Sent(AccountPane pane) => JsonSerializer.Deserialize<string>(await Eval(pane, SentScript)) ?? "";
+            await Eval(_panes[0], FakeSocket);
+            await Eval(_panes[1], FakeSocket);
+            _config.Restock[0].On = true;
+            await ApplyRestockAsync(0);
+            await Task.Delay(2500);
+            var firstBuy = await Sent(_panes[0]);
+            // O jogo confirma (o aviso da compra e o estoque novo): 4 s depois vêm os revives, depois as Ultra Balls.
+            await Eval(_panes[0], "__msg({ t: 'batalha', ev: [{ k: 'compra', nome: 'Ultimate Potion', qtd: 4000, gasto: 6000000 }] });" +
+                                  " __msg({ t: 'estado', estado: { gold: 44000000, items: { 204: 5000, 205: 50 } } }); 1");
+            await Task.Delay(4500);
+            await Eval(_panes[0], "__msg({ t: 'estado', estado: { items: { 204: 5000, 205: 500 } } }); 1");
+            await Task.Delay(4500);
+            var allBuys = await Sent(_panes[0]);
+            var notBought = await Sent(_panes[1]);
+            await RefreshRestockAsync(0);
+            await RefreshRestockAsync(1);
+            Check("recompra: arruma a fila das poções e compra poção, revive e pokebola, uma por vez (desligada não compra)",
+                firstBuy == "[\"fila:204,200\",\"item:204x4000\"]" && allBuys == "[\"fila:204,200\",\"item:204x4000\",\"item:205x450\",\"ball:4x9999\"]"
+                && notBought == "[]" && _panes[0].RestockState == "ligada" && _panes[1].RestockState == "desligada",
+                $"conta1={allBuys} (1ª={firstBuy}) conta2={notBought} carrinhos={_panes[0].RestockState},{_panes[1].RestockState}");
+
+            // A janela do carrinho: mostra a conta e a poção escolhida; desligar nela vale na hora, e a página que
+            // recarrega recebe a configuração sozinha.
+            ShowRestockWindow(0);
+            var restockWindow = _restockWindows[0]!;
+            await WaitFor(() => restockWindow.StateText.Contains("na conta"), 5);
+            string windowState = restockWindow.StateText, windowPotion = restockWindow.PotionText;
+            var picture = Path.Combine(Path.GetTempPath(), "PokeIdleDeck-recompra.png");
+            using (var bitmap = new Bitmap(restockWindow.Width, restockWindow.Height))
+            {
+                restockWindow.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+                bitmap.Save(picture);
+            }
+            var typed = restockWindow.TypeBallKeep("12.345");
+            var typedComma = restockWindow.TypeBallKeep("30,000");
+            Check("recompra: campo de quantidade aceita 12.345 e 30,000 e escreve como o registro",
+                typed == (12345m, "12.345") && typedComma == (30000m, "30.000") && _config.Restock[0].Balls.Keep == 30000,
+                $"12.345 → {typed} · 30,000 → {typedComma} · config={_config.Restock[0].Balls.Keep}");
+            restockWindow.SetOn(false);
+            await Task.Delay(500);
+            var pageOff = await Eval(_panes[0], "window.__deckRecompra.summary().on");
+            _panes[0].Reload();
+            await Task.Delay(500);
+            await WaitFor(() => _panes[0].Status == PaneStatus.Ok, 15);
+            await Task.Delay(500);
+            var afterReload = await Eval(_panes[0], "[window.__deckRecompra.summary().configured, window.__deckRecompra.summary().on]");
+            restockWindow.Close();
+            Check("recompra: janela do carrinho mostra a conta e desliga na hora; recarregada, a página recebe a configuração",
+                windowState.Contains("na conta teste") && windowPotion.StartsWith("Ultimate Potion") && pageOff == "false" && !_config.Restock[0].On
+                && afterReload == "[true,false]" && _panes[0].RestockState == "desligada" && _restockWindows[0] is null,
+                $"estado='{windowState}' poção='{windowPotion}' página desligada={pageOff} recarregada={afterReload} carrinho={_panes[0].RestockState} (imagem em {picture})");
+
             await Eval(_panes[0], "localStorage.setItem('quem', 'conta1')");
             var own = await Eval(_panes[0], "localStorage.getItem('quem')");
             var other = await Eval(_panes[1], "localStorage.getItem('quem')");
@@ -1646,18 +1814,33 @@ internal sealed class DeckForm : Form
                 echoed == "1,1,0,1" && _panes[2].NoteText?.Contains("Mapa") == true && _panes[1].NoteText is null,
                 $"cliques por conta={echoed} aviso conta3='{_panes[2].NoteText}'");
 
-            // Zoom posto pelo programa não gera o aviso do WebView2 (só o Ctrl + roda da pessoa): avisa à mão.
-            _panes[1].WebView.ZoomFactor = 0.8;
-            OnPaneSettingsChanged(_panes[1]);
-            bool zoomSynced = await WaitFor(() => _panes.All(p => Math.Abs(p.WebView.ZoomFactor - 0.8) < 0.01), 5);
-            Check("eco: zoom de uma conta vale para todas", zoomSynced, string.Join(", ", _panes.Select(p => $"{p.WebView.ZoomFactor:0.00}")));
-            SetZoomAll(1);
-
             SetEcho(false);
             await RealClick(_panes[0], "nav button");
             await Task.Delay(1000);
             var alone = await Clicks();
             Check("eco desligado: o clique fica só na conta", alone == "2,1,0,1", $"cliques por conta={alone}");
+
+            // O zoom não depende do eco (desligado aqui). Zoom posto pelo programa não gera o aviso do WebView2
+            // (só o Ctrl + roda da pessoa): avisa à mão.
+            _panes[1].WebView.ZoomFactor = 0.8;
+            OnPaneSettingsChanged(_panes[1]);
+            bool zoomSynced = await WaitFor(() => _panes.All(p => Math.Abs(p.WebView.ZoomFactor - 0.8) < 0.01), 5);
+            Check("zoom de uma conta vale para todas, com o eco desligado", zoomSynced && !_echo && _config.Zoom.All(z => Math.Abs(z - 0.8) < 0.01),
+                string.Join(", ", _panes.Select(p => $"{p.WebView.ZoomFactor:0.00}")));
+
+            // Os botões de zoom da barra: + e − andam um nível em todas as contas, e o botão do meio mostra o zoom.
+            bool AllAt(double zoom) => _panes.All(p => Math.Abs(p.WebView.ZoomFactor - zoom) < 0.01);
+            SetZoomAll(1);
+            StepZoom(1);
+            bool zoomedIn = AllAt(1.1) && _zoomButton.Text == "Zoom 110%";
+            StepZoom(-1);
+            StepZoom(-1);
+            bool zoomedOut = AllAt(0.9) && _zoomButton.Text == "Zoom 90%";
+            SetZoomAll(1.5);
+            bool top = !_zoomInButton.Enabled && _zoomOutButton.Enabled;
+            Check("botões de zoom: + e − mudam todas as contas", zoomedIn && zoomedOut && top,
+                $"+ {zoomedIn} · −− {zoomedOut} · no máximo o + apaga {top} · {_zoomButton.Text}");
+            SetZoomAll(1);
 
             var folder = _store.CopyUnpacked(Path.Combine(_root, "ext-teste"));
             var info = await _store.InstallAsync(_panes[0].Profile!, folder);
@@ -1965,6 +2148,38 @@ internal sealed class DeckForm : Form
             MarkVoted(1);
             Check("depois de votar o botão vira 'votou' (sem erro)", _panes[1].VoteText == "🗳 ✓ Votou" && _voteStatus.Text?.StartsWith("🗳 Próximo voto em") == true,
                 _panes[1].VoteText + " | " + _voteStatus.Text);
+
+            // O cabeçalho da conta 1 (com extensão, kick, carrinho e voto) na grade e em colunas, a mais apertada:
+            // a imagem para conferir o tamanho dos botões, e o que não coube.
+            var headerPicture = Path.Combine(Path.GetTempPath(), "PokeIdleDeck-cabecalho.png");
+            var shots = new List<Bitmap>();
+            var cut = new Dictionary<DeckLayout, string>();
+            foreach (var shape in new[] { DeckLayout.Grid, DeckLayout.Columns })
+            {
+                SetLayout(shape);
+                await Task.Delay(500);
+                var header = _panes[0].Controls.OfType<ToolStrip>().First();
+                var shot = new Bitmap(header.Width, header.Height);
+                header.DrawToBitmap(shot, new Rectangle(Point.Empty, shot.Size));
+                shots.Add(shot);
+                cut[shape] = string.Join(" ", header.Items.Cast<ToolStripItem>()
+                    .Where(i => i.Available && i.Placement == ToolStripItemPlacement.None).Select(i => i.Text ?? i.ToolTipText));
+            }
+            SetLayout(DeckLayout.Grid);
+            using (var both = new Bitmap(shots.Max(b => b.Width), shots.Sum(b => b.Height) + 8))
+            {
+                using (var g = Graphics.FromImage(both))
+                {
+                    g.Clear(Color.Black);
+                    g.DrawImage(shots[0], 0, 0);
+                    g.DrawImage(shots[1], 0, shots[0].Height + 8);
+                }
+                both.Save(headerPicture);
+            }
+            shots.ForEach(b => b.Dispose());
+            Check("cabeçalho: botões maiores, e nenhum some (em colunas sai o \"rodando há\" e o voto fica só 🗳)",
+                cut[DeckLayout.Grid].Length == 0 && cut[DeckLayout.Columns].Length == 0 && _panes[0].VoteText == "🗳 2 h 05 min",
+                $"cortados na grade='{cut[DeckLayout.Grid]}' em colunas='{cut[DeckLayout.Columns]}' (imagem em {headerPicture})");
             try
             {
                 Check("TopIdle acha o pokeidle (precisa de internet)",

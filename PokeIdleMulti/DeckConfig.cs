@@ -82,6 +82,9 @@ internal sealed class DeckConfig
     /// <summary>O que o botão kick fechou em cada conta.</summary>
     public KickLimit[] Kick { get; set; } = NewKick();
 
+    /// <summary>A recompra de pokebolas, revives e poções de cada conta (o carrinho no cabeçalho dela).</summary>
+    public RestockConfig[] Restock { get; set; } = Enumerable.Range(0, Accounts).Select(_ => new RestockConfig()).ToArray();
+
     /// <summary>Da versão em que o kick só fechava a 2ª live: lido uma vez e convertido em <see cref="Kick"/>.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool[]? KickSingle { get; set; }
@@ -119,6 +122,7 @@ internal sealed class DeckConfig
             if (i < config.KickSingle.Length && config.KickSingle[i])
                 config.Kick[i].Slots = Math.Min(config.Kick[i].Slots, 1);
         config.KickSingle = null;
+        config.Restock = Fill(config.Restock, _ => new RestockConfig()).Select(r => (r ?? new RestockConfig()).Normalized()).ToArray();
         config.Focused = Math.Clamp(config.Focused, 0, Accounts - 1);
         config.KickPointsHeight = Math.Clamp(config.KickPointsHeight, 300, 3000);
         return config;

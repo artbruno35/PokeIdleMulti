@@ -21,12 +21,13 @@ internal sealed class AccountPane : UserControl
     private readonly ToolStripLabel _dot = new("●");
     private readonly ToolStripLabel _name = new();
     private readonly ToolStripLabel _info = new();
-    private readonly ToolStripButton _focus = new("⛶");
-    private readonly ToolStripButton _reload = new("⟳");
-    private readonly ToolStripButton _mute = new("🔊");
+    private readonly ToolStripButton _focus = new(Theme.FocusGlyph) { Font = Theme.Symbols };
+    private readonly ToolStripButton _reload = new(Theme.ReloadGlyph) { Font = Theme.Symbols };
+    private readonly ToolStripButton _mute = new(Theme.SoundGlyph) { Font = Theme.Symbols };
     private readonly ToolStripButton _vote = new("🗳 Votar") { Visible = false };
     private readonly ToolStripDropDownButton _kick = new("kick") { Enabled = false };
     private readonly ToolStripButton _power = new(Theme.PowerGlyph) { Font = Theme.Symbols };
+    private readonly ToolStripButton _restock = new(Theme.CartGlyph) { Font = Theme.Symbols };
     private readonly Label _offNote = new()
     {
         Dock = DockStyle.Fill,
@@ -43,6 +44,8 @@ internal sealed class AccountPane : UserControl
     private DateTime _noteUntil;
     private bool _kickClosed;
     private bool _loginScreen;
+    private string _voteText = "🗳 Votar";
+    private bool _voteShort;
 
     // A tela de login do jogo está à vista (a mesma conta que o jogo faz para desenhar o captcha).
     private const string LoginScript =
@@ -57,14 +60,20 @@ internal sealed class AccountPane : UserControl
 
         Theme.Style(_header);
         _header.Dock = DockStyle.Top;
-        _header.Padding = new Padding(6, 1, 4, 1);
+        _header.Padding = new Padding(6, 2, 4, 2);
         _header.CanOverflow = false;
+        // Letra e ícones maiores que o padrão de 9 pt: com 4 contas na tela, os botões ficavam pequenos demais.
+        _header.Font = new Font("Segoe UI", 10f);
+        _header.ImageScalingSize = new Size(20, 20);
         _dot.ForeColor = Theme.Muted;
         _name.Font = new Font(_header.Font, FontStyle.Bold);
         _info.ForeColor = Theme.Muted;
 
         // Itens à direita entram da direita para a esquerda.
-        _power.Alignment = _focus.Alignment = _reload.Alignment = _mute.Alignment = _kick.Alignment = _vote.Alignment = ToolStripItemAlignment.Right;
+        _power.Alignment = _focus.Alignment = _reload.Alignment = _mute.Alignment = _kick.Alignment = _vote.Alignment =
+            _restock.Alignment = ToolStripItemAlignment.Right;
+        _restock.Click += (_, _) => RestockRequested?.Invoke(this);
+        ShowRestock(null);
         _power.ToolTipText = "Desligar esta conta: o jogo, as extensões, as lives e o voto dela param (ela continua aqui no deck)";
         _power.Click += (_, _) => PowerRequested?.Invoke(this);
         _focus.ToolTipText = "Ampliar esta conta / voltar (duplo clique no cabeçalho faz o mesmo)";
@@ -78,13 +87,23 @@ internal sealed class AccountPane : UserControl
         _kick.DropDownOpening += (_, _) => KickMenuOpening?.Invoke(this, _kick.DropDownItems);
         _kick.DropDownItems.Add("…");
         _header.DoubleClick += (_, _) => FocusRequested?.Invoke(this);
-        _header.Items.AddRange(new ToolStripItem[] { _dot, _name, _info, _power, _focus, _reload, _mute, _kick, _vote });
+        _header.SizeChanged += (_, _) => FitHeader();
+        _header.Items.AddRange(new ToolStripItem[] { _dot, _name, _info, _power, _focus, _reload, _mute, _kick, _restock, _vote });
+        foreach (var item in new ToolStripItem[] { _power, _focus, _reload, _mute, _kick, _restock, _vote })
+            Roomy(item);
 
         _offNote.Font = new Font(Font.FontFamily, 11f);
         _offNote.DoubleClick += (_, _) => FocusRequested?.Invoke(this);
         Controls.Add(WebView);
         Controls.Add(_offNote);
         Controls.Add(_header);
+    }
+
+    /// <summary>Botão do cabeçalho com folga: área de clique maior e espaço entre um e outro (apertado, sem a folga).</summary>
+    private static void Roomy(ToolStripItem item, bool tight = false)
+    {
+        item.Margin = tight ? new Padding(0, 1, 0, 1) : new Padding(2, 1, 2, 1);
+        item.Padding = tight ? new Padding(1) : new Padding(5, 1, 5, 1);
     }
 
     public event Action<AccountPane>? FocusRequested;
@@ -99,6 +118,9 @@ internal sealed class AccountPane : UserControl
 
     /// <summary>O botão ⏻: ligar ou desligar a conta.</summary>
     public event Action<AccountPane>? PowerRequested;
+
+    /// <summary>O carrinho do cabeçalho: abrir a recompra desta conta.</summary>
+    public event Action<AccountPane>? RestockRequested;
 
     /// <summary>O menu do botão kick abrindo: o deck põe nele as lives da Kick para fechar ou abrir de novo.</summary>
     public event Action<AccountPane, ToolStripItemCollection>? KickMenuOpening;
@@ -119,7 +141,7 @@ internal sealed class AccountPane : UserControl
     public DateTime? StartedAt { get; private set; }
     public bool Muted => Core?.IsMuted ?? false;
     public int ExtensionButtonCount => _extensionItems.Count;
-    public string? VoteText => _vote.Visible ? _vote.Text : null;
+    public string? VoteText => _vote.Visible ? _voteText : null;
 
     /// <summary>Cria o navegador da conta e abre o jogo; <paramref name="prepare"/> roda antes de abrir (o conserto das extensões).</summary>
     public async Task InitializeAsync(CoreWebView2Environment env, string url, double zoom, bool muted, Action<CoreWebView2>? setup,
@@ -155,6 +177,8 @@ internal sealed class AccountPane : UserControl
                 // "Voltar ao jogo" da caixa.
                 if (Ultra)
                     _ = SetUltraAsync(true);
+                // A página nova (inclusive a que o próprio jogo recarrega numa versão nova) começa sem configuração.
+                _ = PushRestockAsync();
             }
             else if (e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
             {
@@ -191,6 +215,7 @@ internal sealed class AccountPane : UserControl
         };
         await core.AddScriptToExecuteOnDocumentCreatedAsync(KeyScript);
         await core.AddScriptToExecuteOnDocumentCreatedAsync(Echo.CaptureScript);
+        await core.AddScriptToExecuteOnDocumentCreatedAsync(Restock.Script);
         await ApplyReduceMotionAsync();
 
         setup?.Invoke(core);
@@ -285,6 +310,75 @@ internal sealed class AccountPane : UserControl
         }
     }
 
+    /// <summary>A recompra desta conta (a mesma instância do deck.json: a janela da recompra muda ela).</summary>
+    public RestockConfig RestockConfig { get; set; } = new();
+
+    /// <summary>Manda a configuração da recompra para a página (o script dela já está lá desde o carregamento).</summary>
+    public async Task PushRestockAsync()
+    {
+        if (Off || !OnGame)
+            return;
+        try
+        {
+            await WebView.ExecuteScriptAsync(Restock.ConfigureScript(RestockConfig));
+        }
+        catch
+        {
+            // A página está fechando: a próxima chega configurada no carregamento.
+        }
+    }
+
+    /// <summary>O estoque, o ouro e o registro da recompra; null se a página não é o jogo ou não respondeu.</summary>
+    public async Task<RestockStatus?> ReadRestockAsync()
+    {
+        if (Off || !OnGame)
+            return null;
+        RestockStatus? status;
+        try
+        {
+            status = Restock.Parse(await WebView.ExecuteScriptAsync(Restock.SummaryScript));
+        }
+        catch
+        {
+            return null;
+        }
+        // Página que perdeu a configuração (carregou sem o aviso de pronta): manda de novo.
+        if (status is { Configured: false })
+            await PushRestockAsync();
+        return status;
+    }
+
+    /// <summary>
+    /// O carrinho do cabeçalho: verde com a recompra ligada e o jogo conectado, amarelo ligada esperando o jogo
+    /// (ou em pausa), apagado desligada. A dica tem o estoque e a última linha do registro.
+    /// </summary>
+    public void ShowRestock(RestockStatus? status)
+    {
+        bool on = RestockConfig.On;
+        bool working = on && status is { Connected: true, Paused: false };
+        _restock.ForeColor = !on ? Theme.Muted : working ? Theme.Ok : Theme.Warn;
+        RestockState = !on ? "desligada" : working ? "ligada" : "esperando";
+        var lines = new List<string>
+        {
+            !on ? "Recompra desligada: clique para configurar e ligar (pokebolas, revives e poções no Market do NPC)"
+            : status is null or { Connected: false } ? "Recompra ligada: esperando o jogo conectar"
+            : status.Paused ? "Recompra ligada, em pausa (veja o registro)"
+            : "Recompra ligada",
+        };
+        if (status is { Connected: true })
+        {
+            var ball = status.Balls?.FirstOrDefault(b => b.Id == RestockConfig.Balls.Id);
+            lines.Add($"Ouro {Restock.N(status.Gold)} · {ball?.Name ?? "pokebola"} {Restock.N(ball?.Have ?? 0)} · " +
+                      $"revives {Restock.N(status.ReviveHave)} · poções {Restock.N(status.PotionHave)}");
+        }
+        if (status?.Log is { Count: > 0 } log)
+            lines.Add(log[^1]);
+        _restock.ToolTipText = string.Join("\n", lines);
+    }
+
+    /// <summary>"desligada", "ligada" ou "esperando" (a cor do carrinho), para o autoteste.</summary>
+    public string RestockState { get; private set; } = "desligada";
+
     /// <summary>
     /// Confere se a conta está parada na tela de login. Ali o jogo mantém o captcha do Cloudflare, que
     /// refaz o desafio sozinho e vai juntando memória (medido: +60 MB a cada 30 s no começo).
@@ -348,14 +442,23 @@ internal sealed class AccountPane : UserControl
             HideVote();
             return;
         }
-        _vote.Text = text;
+        _voteText = text;
+        _vote.Text = _voteShort ? VoteIcon(text) : text;
+        FitHeader();
         _vote.ForeColor = color;
         _vote.Font = highlight ? _voteBold : _header.Font;
         _vote.ToolTipText = tooltip;
         _vote.Visible = true;
     }
 
-    public void HideVote() => _vote.Visible = false;
+    public void HideVote()
+    {
+        _vote.Visible = false;
+        FitHeader();
+    }
+
+    /// <summary>Só o 🗳 do texto do voto (ele vem antes de tudo e ocupa dois chars).</summary>
+    private static string VoteIcon(string text) => text.Length > 2 ? text[..2] : text;
 
     /// <summary>
     /// Botão kick do cabeçalho: apagado quando não tem o que fechar (o motivo fica na dica), marcado
@@ -385,7 +488,7 @@ internal sealed class AccountPane : UserControl
                         "Clique no botão de ligar, no canto direito do cabeçalho, para ligar.";
         _offNote.Visible = off;
         WebView.Visible = !off;
-        _reload.Visible = _mute.Visible = _kick.Visible = !off;
+        _reload.Visible = _mute.Visible = _kick.Visible = _restock.Visible = !off;
         foreach (var item in _extensionItems)
             item.Visible = !off;
         _power.ToolTipText = off
@@ -445,6 +548,7 @@ internal sealed class AccountPane : UserControl
             {
                 button.Image = icon;
             }
+            Roomy(button);
             button.Click += (_, _) =>
             {
                 var bounds = button.Bounds;
@@ -453,6 +557,7 @@ internal sealed class AccountPane : UserControl
             _extensionItems.Add(button);
             _header.Items.Add(button);
         }
+        FitHeader();
     }
 
     /// <summary>Atualiza nome, bolinha de status e o tempo rodando (chamado a cada segundo).</summary>
@@ -466,11 +571,16 @@ internal sealed class AccountPane : UserControl
             PaneStatus.Failed => Theme.Bad,
             _ => Theme.Muted,
         };
-        _info.Text = DateTime.Now < _noteUntil ? "· " + _note
+        var info = DateTime.Now < _noteUntil ? "· " + _note
             : _statusText is not null ? "· " + _statusText
             : _loginScreen ? "· na tela de login: entre ou desligue a conta"
             : StartedAt is DateTime started ? "· rodando há " + FormatUptime(DateTime.Now - started)
             : "";
+        if (_info.Text != info)
+        {
+            _info.Text = info;
+            FitHeader();
+        }
     }
 
     private void SetStatus(PaneStatus status, string? text)
@@ -500,7 +610,40 @@ internal sealed class AccountPane : UserControl
         }
     }
 
-    private void UpdateMuteButton() => _mute.Text = Muted ? "🔇" : "🔊";
+    private void UpdateMuteButton() => _mute.Text = Muted ? Theme.MutedGlyph : Theme.SoundGlyph;
+
+    /// <summary>
+    /// Conta estreita (em colunas): primeiro o voto fica só com o 🗳 (o tempo continua na dica e na barra de baixo),
+    /// depois sai o "rodando há", e por fim os botões perdem a folga, para nenhum sumir por falta de espaço. Com
+    /// espaço de novo, tudo volta.
+    /// </summary>
+    private void FitHeader()
+    {
+        int room = _header.DisplayRectangle.Width - 8;
+        int Needed() => _header.Items.Cast<ToolStripItem>()
+            .Where(i => i.Available)
+            .Sum(i => i.GetPreferredSize(Size.Empty).Width + i.Margin.Horizontal);
+        var buttons = _header.Items.Cast<ToolStripItem>().Where(i => i.Alignment == ToolStripItemAlignment.Right).ToList();
+        _header.SuspendLayout();
+        buttons.ForEach(b => Roomy(b));
+        SetShortVote(false);
+        _info.Available = true;
+        if (Needed() > room)
+            SetShortVote(true);
+        if (Needed() > room)
+            _info.Available = false;
+        if (Needed() > room)
+            buttons.ForEach(b => Roomy(b, tight: true));
+        _header.ResumeLayout();
+    }
+
+    private void SetShortVote(bool shortVote)
+    {
+        _voteShort = shortVote;
+        var text = shortVote ? VoteIcon(_voteText) : _voteText;
+        if (_vote.Text != text)
+            _vote.Text = text;
+    }
 
     private static string FormatUptime(TimeSpan time) =>
         time.TotalHours >= 1 ? $"{(int)time.TotalHours} h {time.Minutes:00} min" : $"{time.Minutes} min";
@@ -513,7 +656,7 @@ internal sealed class AccountPane : UserControl
         {
             using var stream = File.OpenRead(Path.Combine(extension.Folder, extension.Icon));
             using var image = Image.FromStream(stream);
-            return new Bitmap(image, new Size(16, 16));
+            return new Bitmap(image, new Size(20, 20));
         }
         catch
         {

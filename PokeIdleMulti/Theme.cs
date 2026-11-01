@@ -22,10 +22,19 @@ internal static class Theme
     /// Os ícones do próprio Windows (Segoe MDL2 Assets). Para o que a fonte normal não tem: o ⏻, por exemplo,
     /// vira um retângulo vazio no Windows 10.
     /// </summary>
-    public static readonly Font Symbols = new("Segoe MDL2 Assets", 9);
+    public static readonly Font Symbols = new("Segoe MDL2 Assets", 11);
 
     /// <summary>O ⏻ dos ícones do Windows (usar com <see cref="Symbols"/>).</summary>
     public const string PowerGlyph = "";
+
+    /// <summary>Ampliar, recarregar e o som dos ícones do Windows: do mesmo tamanho do ⏻ (os da fonte normal saem miúdos).</summary>
+    public const string FocusGlyph = "";
+    public const string ReloadGlyph = "";
+    public const string SoundGlyph = "";
+    public const string MutedGlyph = "";
+
+    /// <summary>O carrinho dos ícones do Windows (a recompra).</summary>
+    public const string CartGlyph = "";
 
     /// <summary>O ícone do deck (o mesmo do exe), na barra de título e na barra de tarefas.</summary>
     public static Icon AppIcon { get; } = new(typeof(Theme).Assembly.GetManifestResourceStream("deck.ico")!);
