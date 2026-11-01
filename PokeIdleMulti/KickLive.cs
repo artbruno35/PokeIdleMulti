@@ -4,14 +4,17 @@ using System.Text.Json;
 namespace PokeIdleMulti;
 
 /// <summary>
-/// Quem está ao vivo na Kick, pela mesma API que o site usa (kick.com/api/v2/channels/{canal}). A Kick
-/// só rende pontos em duas lives ao mesmo tempo, então o deck abre só as duas primeiras da lista que
-/// estão no ar; live offline não fica aberta gastando.
+/// Quem está ao vivo na Kick, pela mesma API que o site usa (kick.com/api/v2/channels/{canal}). O deck
+/// abre só as primeiras da lista que estão no ar, até o limite escolhido em Lives → Canais… (2 de fábrica,
+/// as que a Kick conta para os pontos); live offline não fica aberta gastando.
 /// </summary>
 internal static class KickLive
 {
-    /// <summary>Quantas lives da Kick rendem pontos ao mesmo tempo.</summary>
-    public const int Slots = 2;
+    /// <summary>Quantas lives da Kick abrir em cada conta, de fábrica: as que rendem pontos ao mesmo tempo.</summary>
+    public const int DefaultSlots = 2;
+
+    /// <summary>O teto do campo (cada live custa uns 260 MB de RAM).</summary>
+    public const int MaxSlots = 10;
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
 
@@ -52,9 +55,9 @@ internal static class KickLive
     }
 
     /// <summary>
-    /// As lives para abrir: as primeiras da lista que estão no ar, até <see cref="Slots"/> (a primeira da
+    /// As lives para abrir: as primeiras da lista que estão no ar, até <paramref name="slots"/> (a primeira da
     /// lista tem prioridade). Canal que não deu para conferir conta como no ar, para não perder pontos.
     /// </summary>
-    public static List<string> Pick(IEnumerable<string> channels, IReadOnlyDictionary<string, bool?> live) =>
-        channels.Where(c => live.GetValueOrDefault(c) != false).Take(Slots).ToList();
+    public static List<string> Pick(IEnumerable<string> channels, IReadOnlyDictionary<string, bool?> live, int slots) =>
+        channels.Where(c => live.GetValueOrDefault(c) != false).Take(slots).ToList();
 }

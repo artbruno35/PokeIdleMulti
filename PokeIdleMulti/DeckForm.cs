@@ -475,14 +475,13 @@ internal sealed class DeckForm : Form
         {
             var pane = _panes[i];
             var open = KickOpen(i);
-            var shut = KickShut(i);
             if (_lives[i] is null)
                 pane.SetKick(false, false, _presence[i] is null
                     ? "As lives estão desligadas nesta conta (ligue em Lives, na barra de cima)"
                     : "Nenhum canal da Kick na lista (Lives → Canais…)");
             else if (_config.Kick[i].Limited)
                 pane.SetKick(true, true, "Lives da Kick fechadas nesta conta: " +
-                    (_config.Kick[i].Slots == 0 ? "todas" : shut.Count > 0 ? string.Join(", ", shut) : "a 2ª") +
+                    (_config.Kick[i].Slots == 0 ? "todas" : KickShutText(i)) +
                     (open.Count > 0 ? $" (abertas: {string.Join(", ", open)})" : "") + ". Clique para fechar outra ou abrir de novo");
             else if (open.Count > 0)
                 pane.SetKick(true, false, $"Escolher qual live da Kick fechar nesta conta (abertas: {string.Join(", ", open)}). " +
@@ -500,6 +499,14 @@ internal sealed class DeckForm : Form
     /// <summary>Os canais da lista que o kick fechou na conta.</summary>
     private List<string> KickShut(int index) => _config.KickChannels.Where(_config.Kick[index].Closed.Contains).ToList();
 
+    /// <summary>As fechadas pelo nome, ou quantas vagas a conta perdeu (do tempo em que o kick só fechava a 2ª).</summary>
+    private string KickShutText(int index)
+    {
+        var shut = KickShut(index);
+        int missing = _config.KickLives - _config.Kick[index].SlotsOf(_config.KickLives);
+        return shut.Count > 0 ? string.Join(", ", shut) : missing == 1 ? "1 vaga" : $"{missing} vagas";
+    }
+
     /// <summary>O menu do kick: fechar cada live aberta ou todas; abrir de novo cada fechada ou todas.</summary>
     private List<ToolStripItem> KickMenuItems(int index)
     {
@@ -516,7 +523,7 @@ internal sealed class DeckForm : Form
                 items.Add(new ToolStripSeparator());
             foreach (var channel in shut)
                 items.Add(new ToolStripMenuItem($"Abrir de novo a live de {channel}", null, (_, _) => ReopenKick(index, channel)));
-            items.Add(new ToolStripMenuItem($"Abrir todas de novo (volta às {KickLive.Slots} primeiras da lista no ar)", null,
+            items.Add(new ToolStripMenuItem($"Abrir todas de novo (volta às {_config.KickLives} primeiras da lista no ar)", null,
                 (_, _) => ReopenKick(index, null)));
         }
         if (items.Count == 0)
@@ -550,7 +557,6 @@ internal sealed class DeckForm : Form
         if (_lives[index] is LivesWindow window)
         {
             var kick = window.KickChannels.ToList();
-            var shut = KickShut(index);
             // ▶ tocando, ‖ parada (o deck manda tocar e, se continuar, recarrega: ⟳ quantas vezes). O ‖ e não o
             // ⏸: esse só existe nas fontes de emoji, que o desenham como um botão quadrado.
             var playback = window.KickPlayback.Select(k => k.Channel
@@ -560,8 +566,8 @@ internal sealed class DeckForm : Form
                     : _config.Kick[index].Slots == 0 ? "Kick: todas fechadas no kick"
                     : _kickLive.Count == 0 ? "Kick: conferindo quem está no ar…"
                     : "Kick: nenhuma live da lista no ar");
-            if (_config.Kick[index] is { Limited: true, Slots: > 0 })
-                parts.Add("fechadas no kick: " + (shut.Count > 0 ? string.Join(", ", shut) : "a 2ª"));
+            if (_config.Kick[index].Limited && _config.Kick[index].SlotsOf(_config.KickLives) > 0)
+                parts.Add("fechadas no kick: " + KickShutText(index));
             if (window.Count > kick.Count)
                 parts.Add($"{window.Count - kick.Count} páginas da Twitch");
             if (window.Loaded < window.Count)
@@ -1260,7 +1266,7 @@ internal sealed class DeckForm : Form
                 urls.Insert(0, "https://www.twitch.tv/login");
         }
 
-        int kickSlots = Math.Min(KickLive.Slots, _config.KickChannels.Count);
+        int kickSlots = Math.Min(_config.KickLives, _config.KickChannels.Count);
         if (urls.Count > 0 || kickSlots > 0)
         {
             _lives[index] = await LivesWindow.CreateAsync(_env, _panes[index].ProfileName, _config.AccountNames[index], urls, kickSlots, SelfTestSetup);
@@ -1322,7 +1328,7 @@ internal sealed class DeckForm : Form
         UpdateBar();
     }
 
-    /// <summary>Deixa abertas, em cada janela de lives, só as lives da Kick que estão no ar (até duas).</summary>
+    /// <summary>Deixa abertas, em cada janela de lives, só as lives da Kick que estão no ar (até o limite do deck).</summary>
     private void ApplyKick()
     {
         // Antes da primeira resposta da Kick não abre nada: a live pode estar offline.
@@ -1336,7 +1342,7 @@ internal sealed class DeckForm : Form
             // Sem as fechadas no botão kick da conta, e cada uma levou a vaga dela junto.
             var kick = _config.Kick[i];
             var channels = _config.KickChannels.Where(c => !kick.Closed.Contains(c));
-            _lives[i]?.SetKick(KickLive.Pick(channels, _kickLive).Take(kick.Slots).Select(c => (c, KickUrl(c))).ToList());
+            _lives[i]?.SetKick(KickLive.Pick(channels, _kickLive, kick.SlotsOf(_config.KickLives)).Select(c => (c, KickUrl(c))).ToList());
         }
         UpdateBar();
     }
@@ -1351,7 +1357,7 @@ internal sealed class DeckForm : Form
         foreach (var shut in channel is null ? KickOpen(index) : new List<string> { channel })
             if (!kick.Closed.Contains(shut))
                 kick.Closed.Add(shut);
-        kick.Slots = channel is null ? 0 : Math.Max(0, kick.Slots - 1);
+        kick.Slots = channel is null ? 0 : Math.Max(0, kick.SlotsOf(_config.KickLives) - 1);
         SaveConfig();
         ApplyKick();
         _panes[index].Note(channel is null ? "Kick: fechei todas as lives" : $"Kick: fechei a live de {channel}");
@@ -1364,11 +1370,12 @@ internal sealed class DeckForm : Form
         if (channel is null)
         {
             kick.Closed.Clear();
-            kick.Slots = KickLive.Slots;
+            kick.Slots = null;
         }
         else if (kick.Closed.Remove(channel))
         {
-            kick.Slots = Math.Min(KickLive.Slots, kick.Slots + 1);
+            kick.Slots = kick.SlotsOf(_config.KickLives) + 1;
+            kick.Fit(_config.KickLives);
         }
         SaveConfig();
         ApplyKick();
@@ -1504,12 +1511,13 @@ internal sealed class DeckForm : Form
 
     private async Task EditChannelsAsync()
     {
-        using var dialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode);
+        using var dialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, _config.KickLives);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
         _config.TwitchChannels = dialog.TwitchChannels;
         _config.KickChannels = dialog.KickChannels;
         _config.TwitchMode = dialog.TwitchMode;
+        SetKickLives(dialog.KickLives);
         SaveConfig();
         _kickLive.Clear();
         for (int i = 0; i < Accounts; i++)
@@ -1519,6 +1527,14 @@ internal sealed class DeckForm : Form
             CloseLives(i);
             await OpenLivesAsync(i);
         }
+    }
+
+    /// <summary>O limite de lives da Kick por conta; vale quando as lives reabrem (salvar os canais já reabre).</summary>
+    private void SetKickLives(int lives)
+    {
+        _config.KickLives = Math.Clamp(lives, 0, KickLive.MaxSlots);
+        foreach (var kick in _config.Kick)
+            kick.Fit(_config.KickLives);
     }
 
     private void SaveConfig()
@@ -1985,15 +2001,19 @@ internal sealed class DeckForm : Form
                 && !AdBlock.Blocked("https://challenges.cloudflare.com/x") && !AdBlock.Blocked("https://notgooglesyndication.com/"),
                 string.Join(",", ads));
 
-            Check("Kick: abre só as 2 primeiras da lista que estão no ar",
+            Check("Kick: abre só as primeiras da lista que estão no ar, até o limite (2 de fábrica, ou o escolhido)",
                 KickLive.Pick(new[] { "biscoitao", "axt", "clovao", "outro" },
-                    new Dictionary<string, bool?> { ["biscoitao"] = false, ["axt"] = true, ["clovao"] = true, ["outro"] = true })
+                    new Dictionary<string, bool?> { ["biscoitao"] = false, ["axt"] = true, ["clovao"] = true, ["outro"] = true }, 2)
                     .SequenceEqual(new[] { "axt", "clovao" })
                 && KickLive.Pick(new[] { "biscoitao", "axt", "clovao" },
-                    new Dictionary<string, bool?> { ["biscoitao"] = true, ["axt"] = false, ["clovao"] = true })
+                    new Dictionary<string, bool?> { ["biscoitao"] = true, ["axt"] = false, ["clovao"] = true }, 2)
                     .SequenceEqual(new[] { "biscoitao", "clovao" })
-                && KickLive.Pick(new[] { "biscoitao", "axt", "clovao" }, new Dictionary<string, bool?>())
-                    .SequenceEqual(new[] { "biscoitao", "axt" }));
+                && KickLive.Pick(new[] { "biscoitao", "axt", "clovao" }, new Dictionary<string, bool?>(), 2)
+                    .SequenceEqual(new[] { "biscoitao", "axt" })
+                && KickLive.Pick(new[] { "biscoitao", "axt", "clovao", "outro" },
+                    new Dictionary<string, bool?> { ["axt"] = false }, 3)
+                    .SequenceEqual(new[] { "biscoitao", "clovao", "outro" })
+                && new DeckConfig().KickLives == 2);
             Check("Kick: resposta da API (no ar / offline)",
                 KickLive.ParseLive("{\"livestream\":null}") == false && KickLive.ParseLive("{\"livestream\":{\"is_live\":true}}") == true
                 && KickLive.ParseLive("{}") is null && KickLive.ParseLive("<html>") is null);
@@ -2101,6 +2121,45 @@ internal sealed class DeckForm : Form
                 migrated.Kick[3].Slots == 1 && migrated.Kick.Take(3).All(k => !k.Limited)
                 && !saved.Contains("KickSingle") && !saved.Contains("Limited") && saved.Contains("\"Slots\": 1"),
                 string.Join(",", migrated.Kick.Select(k => k.Slots)));
+
+            // deck.json de antes do limite: o 2 fixo escrito em cada conta vira "todas"; com o limite em 3, uma conta
+            // que fechou uma live fica com 2, e um limite fora da faixa é corrigido.
+            File.WriteAllText(oldConfig, "{ \"Kick\": [ { \"Slots\": 2, \"Closed\": [] }, { \"Slots\": 1, \"Closed\": [\"yetz\"] } ] }");
+            var legacy = DeckConfig.Load(oldConfig);
+            File.WriteAllText(oldConfig, "{ \"KickLives\": 3, \"Kick\": [ { \"Slots\": 2, \"Closed\": [\"yetz\"] }, { \"Slots\": 3, \"Closed\": [] } ] }");
+            var three = DeckConfig.Load(oldConfig);
+            File.WriteAllText(oldConfig, "{ \"KickLives\": 99 }");
+            var tooMany = DeckConfig.Load(oldConfig);
+            Check("kick: limite de lives no deck.json (o de antes vira todas; fora da faixa é corrigido)",
+                legacy.KickLives == 2 && legacy.Kick[0].Slots is null && !legacy.Kick[0].Limited && legacy.Kick[1].Slots == 1 && legacy.Kick[1].Limited
+                && three.KickLives == 3 && three.Kick[0].SlotsOf(3) == 2 && three.Kick[0].Limited && three.Kick[1].Slots is null && three.Kick[2].SlotsOf(3) == 3
+                && tooMany.KickLives == KickLive.MaxSlots,
+                $"antes={legacy.KickLives}:{string.Join(",", legacy.Kick.Select(k => k.Slots?.ToString() ?? "todas"))} " +
+                $"com 3={string.Join(",", three.Kick.Select(k => k.SlotsOf(3)))} 99→{tooMany.KickLives}");
+
+            // O campo em Lives → Canais…: com 3, a conta abre as 3 primeiras da lista (o autoteste não pergunta à Kick
+            // quem está no ar, então conta todas como no ar), e a janela dos pontos põe as 3 colunas lado a lado.
+            using (var channelsDialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, 3))
+                SetKickLives(channelsDialog.KickLives);
+            CloseLives(0);
+            await OpenLivesAsync(0);
+            var lives3 = _lives[0];
+            bool opened3 = await WaitFor(() => lives3 is not null && lives3.Loaded == lives3.Count
+                && lives3.KickChannels.SequenceEqual(new[] { "biscoitao", "yetz", "surskity" }), 20);
+            ShowKick(0);
+            await Task.Delay(300);
+            // Lado a lado: cada coluna começa num lugar diferente da janela.
+            int columns3 = lives3?.KickLayout.Select(c => c.Frame.Left).Distinct().Count() ?? 0;
+            lives3?.Close();
+            Activate();
+            SetKickLives(2);
+            CloseLives(0);
+            await OpenLivesAsync(0);
+            bool back2 = await WaitFor(() => _lives[0] is LivesWindow w && w.Loaded == w.Count && w.KickChannels.Count() == 2, 20);
+            Check("kick: com o limite em 3 a conta abre 3 lives (3 colunas nos pontos), e volta a 2",
+                opened3 && columns3 == 3 && back2,
+                $"Kick={string.Join(",", lives3?.KickChannels ?? Enumerable.Empty<string>())} colunas={columns3} " +
+                $"de volta a 2={back2} ({string.Join(",", _lives[0]?.KickChannels ?? Enumerable.Empty<string>())})");
 
             // ⏻ na conta 1 (que tem lives): o jogo vira página em branco e as lives fecham; ligar traz tudo de volta.
             await SetPaneOffAsync(0, true);

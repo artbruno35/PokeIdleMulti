@@ -6,8 +6,9 @@ internal sealed class ChannelsDialog : Form
     private readonly TextBox _twitch = NewList();
     private readonly TextBox _kick = NewList();
     private readonly ComboBox _twitchMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 380 };
+    private readonly NumericUpDown _kickLives = new() { Minimum = 0, Maximum = KickLive.MaxSlots, Width = 60 };
 
-    public ChannelsDialog(IEnumerable<string> twitch, IEnumerable<string> kick, TwitchMode twitchMode)
+    public ChannelsDialog(IEnumerable<string> twitch, IEnumerable<string> kick, TwitchMode twitchMode, int kickLives)
     {
         Text = "Canais das lives";
         Icon = Theme.AppIcon;
@@ -16,7 +17,7 @@ internal sealed class ChannelsDialog : Form
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(480, 410);
+        ClientSize = new Size(480, 466);
         Padding = new Padding(12);
 
         _twitch.Text = string.Join(Environment.NewLine, twitch);
@@ -32,15 +33,20 @@ internal sealed class ChannelsDialog : Form
         var mode = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 34 };
         mode.Controls.Add(new Label { Text = "Twitch:", AutoSize = true, Margin = new Padding(0, 7, 4, 0) });
         mode.Controls.Add(_twitchMode);
+        _kickLives.Value = Math.Clamp(kickLives, 0, KickLive.MaxSlots);
+        var lives = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 34 };
+        lives.Controls.Add(new Label { Text = "Lives da Kick abertas em cada conta:", AutoSize = true, Margin = new Padding(0, 7, 4, 0) });
+        lives.Controls.Add(_kickLives);
+        lives.Controls.Add(new Label { Text = "(de fábrica 2; 0 = nenhuma)", AutoSize = true, Margin = new Padding(4, 7, 0, 0) });
 
         var hint = new Label
         {
             Dock = DockStyle.Top,
-            Height = 84,
+            Height = 100,
             Text = "Um canal por linha, como aparece no endereço (twitch.tv/rodil → rodil). Use os streamers " +
                    "oficiais do painel de bônus do jogo. Ao salvar, as lives abertas reabrem com os canais novos.\n" +
-                   "Kick: só 2 lives rendem pontos ao mesmo tempo. O deck abre as 2 primeiras da lista que " +
-                   "estiverem no ar (a primeira tem prioridade) e não deixa live offline aberta.",
+                   "Kick: o deck abre as primeiras da lista que estiverem no ar, até o número escolhido embaixo " +
+                   "(a primeira tem prioridade), e não deixa live offline aberta. Cada live a mais gasta uns 260 MB de RAM.",
         };
 
         var columns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
@@ -64,6 +70,7 @@ internal sealed class ChannelsDialog : Form
         // Os controles encaixam do último para o primeiro: texto no topo, botões embaixo, a caixa logo acima deles.
         Controls.Add(columns);
         Controls.Add(mode);
+        Controls.Add(lives);
         Controls.Add(buttons);
         Controls.Add(hint);
     }
@@ -71,6 +78,7 @@ internal sealed class ChannelsDialog : Form
     public List<string> TwitchChannels => Parse(_twitch.Text);
     public List<string> KickChannels => Parse(_kick.Text);
     public TwitchMode TwitchMode => (TwitchMode)Math.Max(0, _twitchMode.SelectedIndex);
+    public int KickLives => (int)_kickLives.Value;
 
     private static TextBox NewList() => new()
     {

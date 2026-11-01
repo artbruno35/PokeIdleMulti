@@ -72,9 +72,12 @@ internal sealed class DeckConfig
 
     /// <summary>
     /// Streamers oficiais na Kick, em ordem de prioridade. Abre a live inteira, que é o que rende pontos
-    /// do canal, mas só das duas primeiras que estiverem no ar (<see cref="KickLive"/>).
+    /// do canal, mas só das primeiras que estiverem no ar, até <see cref="KickLives"/> (<see cref="KickLive"/>).
     /// </summary>
     public List<string> KickChannels { get; set; } = new() { "biscoitao", "yetz", "surskity" };
+
+    /// <summary>Quantas lives da Kick abrir em cada conta (Lives → Canais…). De fábrica 2, as que a Kick conta para os pontos.</summary>
+    public int KickLives { get; set; } = KickLive.DefaultSlots;
 
     /// <summary>Altura da janela dos pontos da Kick, em pixels a 100% de escala (muda arrastando a borda dela).</summary>
     public int KickPointsHeight { get; set; } = 640;
@@ -116,12 +119,13 @@ internal sealed class DeckConfig
         config.Off = Fill(config.Off, _ => false);
         config.Kick = Fill(config.Kick, _ => new KickLimit())
             .Select(k => k is { Closed: not null } ? k : new KickLimit()).ToArray();
-        foreach (var kick in config.Kick)
-            kick.Slots = Math.Clamp(kick.Slots, 0, KickLive.Slots);
+        config.KickLives = Math.Clamp(config.KickLives, 0, KickLive.MaxSlots);
         for (int i = 0; i < Accounts && config.KickSingle is not null; i++)
             if (i < config.KickSingle.Length && config.KickSingle[i])
-                config.Kick[i].Slots = Math.Min(config.Kick[i].Slots, 1);
+                config.Kick[i].Slots = Math.Min(config.Kick[i].Slots ?? config.KickLives, 1);
         config.KickSingle = null;
+        foreach (var kick in config.Kick)
+            kick.Fit(config.KickLives);
         config.Restock = Fill(config.Restock, _ => new RestockConfig()).Select(r => (r ?? new RestockConfig()).Normalized()).ToArray();
         config.Focused = Math.Clamp(config.Focused, 0, Accounts - 1);
         config.KickPointsHeight = Math.Clamp(config.KickPointsHeight, 300, 3000);
@@ -151,15 +155,31 @@ internal sealed class DeckConfig
 internal sealed class KickLimit
 {
     /// <summary>
-    /// Quantas lives da Kick abrem nesta conta. Cada live fechada leva a vaga dela junto, para a conferência
-    /// de 2 em 2 min não abrir outra no lugar; 0 é "fechar todas".
+    /// Quantas lives da Kick abrem nesta conta; null é o limite do deck (<see cref="DeckConfig.KickLives"/>). Cada
+    /// live fechada leva a vaga dela junto, para a conferência de 2 em 2 min não abrir outra no lugar; 0 é
+    /// "fechar todas".
     /// </summary>
-    public int Slots { get; set; } = KickLive.Slots;
+    public int? Slots { get; set; }
 
     /// <summary>Os canais fechados: não abrem nesta conta até abrir de novo no kick.</summary>
     public List<string> Closed { get; set; } = new();
 
     /// <summary>Alguma live fechada no kick (o botão fica marcado).</summary>
     [JsonIgnore]
-    public bool Limited => Slots < KickLive.Slots || Closed.Count > 0;
+    public bool Limited => Slots is not null || Closed.Count > 0;
+
+    /// <summary>As vagas desta conta com o limite do deck em <paramref name="max"/>.</summary>
+    public int SlotsOf(int max) => Math.Clamp(Slots ?? max, 0, max);
+
+    /// <summary>
+    /// Acerta as vagas a um limite novo: chegar ao limite é ter todas (null), e um deck.json de antes (com o 2
+    /// fixo escrito em cada conta) também cai aqui.
+    /// </summary>
+    public void Fit(int max)
+    {
+        if (Slots is int slots && slots >= max)
+            Slots = null;
+        else if (Slots < 0)
+            Slots = 0;
+    }
 }
