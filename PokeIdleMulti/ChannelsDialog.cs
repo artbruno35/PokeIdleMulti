@@ -7,8 +7,12 @@ internal sealed class ChannelsDialog : Form
     private readonly TextBox _kick = NewList();
     private readonly ComboBox _twitchMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 380 };
     private readonly NumericUpDown _kickLives = new() { Minimum = 0, Maximum = KickLive.MaxSlots, Width = 60 };
+    private readonly CheckBox _kickRedeem = new() { Text = "Resgatar sozinho com os pontos da Kick:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) };
+    private readonly ComboBox _kickReward = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+    private readonly ToolTip _tips = new();
 
-    public ChannelsDialog(IEnumerable<string> twitch, IEnumerable<string> kick, TwitchMode twitchMode, int kickLives)
+    public ChannelsDialog(IEnumerable<string> twitch, IEnumerable<string> kick, TwitchMode twitchMode, int kickLives,
+        bool kickRedeem = false, KickReward kickReward = KickReward.Xp)
     {
         Text = "Canais das lives";
         Icon = Theme.AppIcon;
@@ -17,7 +21,7 @@ internal sealed class ChannelsDialog : Form
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(480, 466);
+        ClientSize = new Size(480, 546);
         Padding = new Padding(12);
 
         _twitch.Text = string.Join(Environment.NewLine, twitch);
@@ -38,6 +42,29 @@ internal sealed class ChannelsDialog : Form
         lives.Controls.Add(new Label { Text = "Lives da Kick abertas em cada conta:", AutoSize = true, Margin = new Padding(0, 7, 4, 0) });
         lives.Controls.Add(_kickLives);
         lives.Controls.Add(new Label { Text = "(de fábrica 2; 0 = nenhuma)", AutoSize = true, Margin = new Padding(4, 7, 0, 0) });
+
+        // Na mesma ordem do enum KickReward.
+        _kickReward.Items.AddRange(new object[]
+        {
+            "+15% XP (300 pontos)",
+            "+15% Captura (500 pontos)",
+            "+15% Shiny, Secret Lure (1000 pontos)",
+        });
+        _kickReward.SelectedIndex = (int)kickReward;
+        _kickRedeem.Checked = kickRedeem;
+        _kickReward.Enabled = kickRedeem;
+        _kickRedeem.CheckedChanged += (_, _) => _kickReward.Enabled = _kickRedeem.Checked;
+        var redeem = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 30 };
+        redeem.Controls.Add(_kickRedeem);
+        redeem.Controls.Add(_kickReward);
+        var redeemHint = new Label
+        {
+            Dock = DockStyle.Bottom,
+            Height = 46,
+            Text = "A cada 5 min confere o saldo de cada live da Kick aberta e resgata 1 bônus se der (as horas " +
+                   "acumulam). Vincule a Kick no jogo (Bônus na Kick) em cada conta.",
+        };
+        _tips.SetToolTip(_kickRedeem, "Sem a Kick vinculada no jogo os pontos voltam: o deck para de resgatar naquela conta e avisa no menu Lives");
 
         var hint = new Label
         {
@@ -71,6 +98,8 @@ internal sealed class ChannelsDialog : Form
         Controls.Add(columns);
         Controls.Add(mode);
         Controls.Add(lives);
+        Controls.Add(redeem);
+        Controls.Add(redeemHint);
         Controls.Add(buttons);
         Controls.Add(hint);
     }
@@ -79,6 +108,15 @@ internal sealed class ChannelsDialog : Form
     public List<string> KickChannels => Parse(_kick.Text);
     public TwitchMode TwitchMode => (TwitchMode)Math.Max(0, _twitchMode.SelectedIndex);
     public int KickLives => (int)_kickLives.Value;
+    public bool KickRedeem => _kickRedeem.Checked;
+    public KickReward KickReward => (KickReward)Math.Max(0, _kickReward.SelectedIndex);
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            _tips.Dispose();
+        base.Dispose(disposing);
+    }
 
     private static TextBox NewList() => new()
     {

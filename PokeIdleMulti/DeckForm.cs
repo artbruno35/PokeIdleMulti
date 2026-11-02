@@ -41,6 +41,9 @@ internal sealed class DeckForm : Form
     private DateTime _kickCheckAt;
     private bool _kickChecking;
     private bool _kickWatching;
+    private readonly KickRedeemer[] _redeem = Enumerable.Range(0, Accounts).Select(_ => new KickRedeemer()).ToArray();
+    private DateTime _kickRedeemAt;
+    private bool _kickRedeeming;
     private readonly Dictionary<(int Pane, string Extension), PopupWindow> _extensionWindows = new();
     private readonly ToolStrip _bar = new ClickThroughToolStrip();
     private readonly StatusStrip _status = new();
@@ -306,15 +309,84 @@ internal sealed class DeckForm : Form
     /// <summary>Dados trazidos de outro PC: reinstala da pasta daqui as extensões cujo caminho antigo sumiu.</summary>
     private Task RepairExtensions(CoreWebView2 core) => _store.RepairAsync(core.Profile);
 
-    // As lives do autoteste vêm de outro site (lives.test), como a Kick e o jogo são sites diferentes: assim
-    // dividem processo entre elas, mas não com o jogo.
+    // As lives do autoteste vêm de outros sites (lives.test e kick.test), como a Kick e o jogo são sites diferentes:
+    // assim dividem processo entre elas, mas não com o jogo. A Kick de teste (o player e a API) quem responde é o
+    // próprio deck, porque o navegador não deixa interceptar os pedidos de um site mapeado para uma pasta.
     private Action<CoreWebView2>? SelfTestSetup => _selfTest
         ? core =>
         {
             core.SetVirtualHostNameToFolderMapping("deck.test", Path.Combine(_root, "site"), CoreWebView2HostResourceAccessKind.Allow);
             core.SetVirtualHostNameToFolderMapping("lives.test", Path.Combine(_root, "site"), CoreWebView2HostResourceAccessKind.Allow);
+            core.AddWebResourceRequestedFilter("https://kick.test/*", CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.All);
+            core.WebResourceRequested += (_, e) => FakeKick(e);
         }
         : null;
+
+    // A Kick de mentira do autoteste: o saldo de cada canal e cada resgate pedido ("canal bônus login corpo").
+    private readonly Dictionary<string, int> _fakePoints = new();
+    private readonly List<string> _fakeRedeems = new();
+
+    /// <summary>
+    /// A Kick do autoteste (kick.test): as páginas da pasta do site de teste (o player é o kick.html; sem o arquivo,
+    /// fica sem resposta, como sem internet) e a API, com o saldo, os bônus do canal e o resgate.
+    /// </summary>
+    private void FakeKick(CoreWebView2WebResourceRequestedEventArgs e)
+    {
+        var uri = new Uri(e.Request.Uri);
+        if (_env is null || uri.Host != "kick.test")
+            return;
+        if (!uri.AbsolutePath.StartsWith("/api/"))
+        {
+            var file = Path.Combine(_root, "site", uri.AbsolutePath.TrimStart('/'));
+            if (File.Exists(file))
+                e.Response = _env.CreateWebResourceResponse(new MemoryStream(File.ReadAllBytes(file)), 200, "OK", "Content-Type: text/html");
+            return;
+        }
+        // api/v2/channels/{canal}/points, …/rewards e …/rewards/{id}/redeem
+        var path = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (path.Length < 5 || path[2] != "channels")
+            return;
+        string channel = path[3];
+        // Os 3 do PokeIdle e um "XP" de outro tipo, que não é o do jogo.
+        var rewards = new[]
+        {
+            (Id: "xp", Title: "Bônus +15% XP PokeIdle", Cost: 300, Description: "1 hora de +15% de XP no PokeIdle."),
+            (Id: "cap", Title: "Bônus de +15% Capture Boost", Cost: 500, Description: "1 hora de +15% na chance de captura no PokeIdle."),
+            (Id: "lure", Title: "Bônus de +15% Secret Lure", Cost: 1000, Description: "1 hora de +15% na chance de shiny no PokeIdle."),
+            (Id: "chat", Title: "Dobro de XP no chat", Cost: 100, Description: ""),
+        };
+        int status = 200;
+        string json;
+        if (path[4] == "points")
+        {
+            json = $"{{\"data\":{{\"points\":{_fakePoints.GetValueOrDefault(channel)}}},\"message\":\"OK\"}}";
+        }
+        else if (path.Length == 5 && path[4] == "rewards")
+        {
+            json = JsonSerializer.Serialize(new
+            {
+                data = rewards.Select(r => new { id = r.Id, title = r.Title, cost = r.Cost, description = r.Description, is_enabled = true, is_paused = false }),
+            });
+        }
+        else if (path.Length == 7 && path[6] == "redeem" && e.Request.Method == "POST" && rewards.Any(r => r.Id == path[5]))
+        {
+            string body = e.Request.Content is null ? "" : new StreamReader(e.Request.Content).ReadToEnd();
+            string auth = e.Request.Headers.Contains("Authorization") ? e.Request.Headers.GetHeader("Authorization") : "sem login";
+            _fakeRedeems.Add($"{channel} {path[5]} {auth} {body}");
+            int cost = rewards.First(r => r.Id == path[5]).Cost;
+            if (_fakePoints.GetValueOrDefault(channel) >= cost)
+                _fakePoints[channel] -= cost;
+            else
+                status = 400;
+            json = "{\"message\":\"OK\"}";
+        }
+        else
+        {
+            return;
+        }
+        e.Response = _env.CreateWebResourceResponse(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)), status,
+            status == 200 ? "OK" : "Bad Request", "Content-Type: application/json");
+    }
 
     protected override void OnHandleCreated(EventArgs e)
     {
@@ -581,13 +653,20 @@ internal sealed class DeckForm : Form
             var kick = window.KickChannels.ToList();
             // ▶ tocando, ‖ parada (o deck manda tocar e, se continuar, recarrega: ⟳ quantas vezes). O ‖ e não o
             // ⏸: esse só existe nas fontes de emoji, que o desenham como um botão quadrado.
+            // Com o resgate ligado, o saldo de cada uma entre parênteses: (230/300 pontos, resgatou 14:05).
+            var redeem = _config.KickRedeem ? _redeem[index] : null;
             var playback = window.KickPlayback.Select(k => k.Channel
-                + (k.Playing == true ? " ▶" : k.Playing == false ? " ‖" : "") + (k.Reloads > 0 ? $" ⟳{k.Reloads}" : ""));
+                + (k.Playing == true ? " ▶" : k.Playing == false ? " ‖" : "") + (k.Reloads > 0 ? $" ⟳{k.Reloads}" : "")
+                + (redeem?.Text(k.Channel) is { Length: > 0 } points ? $" ({points})" : ""));
             if (_config.KickChannels.Count > 0)
                 parts.Add(kick.Count > 0 ? "Kick no ar: " + string.Join(", ", playback)
                     : _config.Kick[index].Slots == 0 ? "Kick: todas fechadas no kick"
                     : _kickLive.Count == 0 ? "Kick: conferindo quem está no ar…"
                     : "Kick: nenhuma live da lista no ar");
+            if (redeem?.Stopped is string stopped)
+                parts.Add("resgate parado: " + stopped);
+            else if (redeem is { NoLogin: true } && kick.Count > 0)
+                parts.Add("resgate: entre na Kick nas lives desta conta");
             if (_config.Kick[index].Limited && _config.Kick[index].SlotsOf(_config.KickLives) > 0)
                 parts.Add("fechadas no kick: " + KickShutText(index));
             if (window.Count > kick.Count)
@@ -620,6 +699,8 @@ internal sealed class DeckForm : Form
             _ = CheckKickAsync();
         if (!_selfTest && _seconds % 30 == 15)
             _ = WatchKickAsync();
+        if (!_selfTest && _config.KickRedeem && !_kickRedeeming && DateTime.Now >= _kickRedeemAt && _lives.Any(l => l is not null))
+            _ = RedeemKickAsync();
         UpdateVotes();
     }
 
@@ -1266,11 +1347,11 @@ internal sealed class DeckForm : Form
     // (testado: os pontos sobem igual), gastando uns 40% menos. A página do canal só abre para o chat e os
     // pontos, com a janela das lives na tela.
     private string KickUrl(string channel) => _selfTest
-        ? $"https://lives.test/kick.html?canal={Uri.EscapeDataString(channel)}"
+        ? $"https://kick.test/kick.html?canal={Uri.EscapeDataString(channel)}"
         : $"https://player.kick.com/{channel}";
 
     private string KickChatUrl(string channel) => _selfTest
-        ? $"https://lives.test/kick.html?canal={Uri.EscapeDataString(channel)}&chat=1"
+        ? $"https://kick.test/kick.html?canal={Uri.EscapeDataString(channel)}&chat=1"
         : $"https://kick.com/{channel}";
 
     private async Task OpenLivesAsync(int index)
@@ -1311,8 +1392,10 @@ internal sealed class DeckForm : Form
                     other.PointsHeight = height;
             };
             ApplyKick();
-            // Confere logo quem está no ar (o autoteste não sai para a internet: abre as primeiras da lista).
+            // Confere logo quem está no ar (o autoteste não sai para a internet: abre as primeiras da lista), e
+            // o saldo dos pontos 1 min depois, com os players já carregados.
             _kickCheckAt = DateTime.Now;
+            _kickRedeemAt = DateTime.Now.AddMinutes(1);
         }
         UpdateBar();
     }
@@ -1356,6 +1439,58 @@ internal sealed class DeckForm : Form
             _kickWatching = false;
         }
         UpdateBar();
+    }
+
+    // A API da Kick (no autoteste, a de mentira em kick.test).
+    private string KickApi => _selfTest ? "https://kick.test" : "https://kick.com";
+
+    /// <summary>
+    /// A cada 5 min, com o resgate ligado em Lives → Canais…: em cada conta, o saldo de cada live da Kick aberta e,
+    /// se der, 1 resgate do bônus escolhido em cada uma (as horas acumulam no jogo).
+    /// </summary>
+    private async Task RedeemKickAsync()
+    {
+        _kickRedeeming = true;
+        _kickRedeemAt = DateTime.Now + KickRedeemer.Interval;
+        try
+        {
+            for (int i = 0; i < Accounts; i++)
+            {
+                if (_lives[i] is not LivesWindow window || !window.KickChannels.Any())
+                    continue;
+                var redeemer = _redeem[i];
+                var token = await ReadKickTokenAsync(i);
+                redeemer.NoLogin = token is null;
+                if (token is null)
+                    continue;
+                var reward = _config.KickReward;
+                foreach (var (channel, result) in await window.EvalKickAsync(c => redeemer.Script(KickApi, c, token, reward)))
+                    if (redeemer.Apply(channel, result) is string note)
+                        _panes[i].Note(note);
+            }
+        }
+        finally
+        {
+            _kickRedeeming = false;
+        }
+        UpdateBar();
+    }
+
+    /// <summary>O login da Kick salvo no perfil da conta: o cookie session_token, que o site manda como "Bearer".</summary>
+    private async Task<string?> ReadKickTokenAsync(int index)
+    {
+        if (_panes[index].Core is not CoreWebView2 core)
+            return null;
+        try
+        {
+            var cookies = await core.CookieManager.GetCookiesAsync("https://kick.com");
+            var token = cookies.FirstOrDefault(c => c.Name == "session_token")?.Value;
+            return string.IsNullOrEmpty(token) ? null : Uri.UnescapeDataString(token);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Deixa abertas, em cada janela de lives, só as lives da Kick que estão no ar (até o limite do deck).</summary>
@@ -1541,13 +1676,19 @@ internal sealed class DeckForm : Form
 
     private async Task EditChannelsAsync()
     {
-        using var dialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, _config.KickLives);
+        using var dialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, _config.KickLives,
+            _config.KickRedeem, _config.KickReward);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
         _config.TwitchChannels = dialog.TwitchChannels;
         _config.KickChannels = dialog.KickChannels;
         _config.TwitchMode = dialog.TwitchMode;
         SetKickLives(dialog.KickLives);
+        // Salvar de novo também volta a resgatar na conta que parou (depois de vincular a Kick no jogo).
+        _config.KickRedeem = dialog.KickRedeem;
+        _config.KickReward = dialog.KickReward;
+        foreach (var redeemer in _redeem)
+            redeemer.Restart();
         SaveConfig();
         _kickLive.Clear();
         for (int i = 0; i < Accounts; i++)
@@ -2162,6 +2303,68 @@ internal sealed class DeckForm : Form
             Check("lives da Kick: página que morreu abre de novo, e a que não carregou é recarregada",
                 killed > 0 && reopenedNow && loadedAgain && Biscoitao() is (true, 2) && livesMotion.Count == 3 && livesMotion.All(m => m == "true"),
                 $"processos fechados={killed} reabriu na hora={reopenedNow} carregou depois={loadedAgain} sem animações={string.Join(",", livesMotion)} {LivesSummary(0)}");
+
+            // Resgate dos pontos (Lives → Canais…), Captura (500), com o login da conta: o cookie session_token vai como
+            // Bearer. O biscoitao tem 1210: 1 resgate por conferência, até não dar mais; o yetz, com 120, não resgata.
+            var kickCookies = _panes[0].Core!.CookieManager;
+            kickCookies.AddOrUpdateCookie(kickCookies.CreateCookie("session_token", "123%7Cabc", "kick.com", "/"));
+            using (var redeemDialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, 2, true, KickReward.Capture))
+            {
+                _config.KickRedeem = redeemDialog.KickRedeem;
+                _config.KickReward = redeemDialog.KickReward;
+                // Como a janela fica, para conferir de olho (aparece um instante).
+                redeemDialog.Show(this);
+                await Task.Delay(500);
+                using var dialogPicture = new Bitmap(redeemDialog.Width, redeemDialog.Height);
+                redeemDialog.DrawToBitmap(dialogPicture, new Rectangle(Point.Empty, dialogPicture.Size));
+                dialogPicture.Save(Path.Combine(Path.GetTempPath(), "PokeIdleDeck-canais.png"));
+            }
+            _fakePoints["biscoitao"] = 1210;
+            _fakePoints["yetz"] = 120;
+            await RedeemKickAsync();
+            var firstRedeem = _fakeRedeems.ToList();
+            await RedeemKickAsync();
+            await RedeemKickAsync();
+            string redeemSummary = LivesSummary(0);
+            bool ulid = firstRedeem.Count == 1 && System.Text.RegularExpressions.Regex.IsMatch(firstRedeem[0],
+                "^biscoitao cap Bearer 123\\|abc \\{\"transaction_id\":\"[0-9A-HJKMNP-TV-Z]{26}\",\"message\":\"\"\\}$");
+            Check("pontos da Kick: resgata o bônus escolhido com o login da conta, 1 por canal a cada conferência, só com saldo",
+                _config.KickRedeem && ulid && _fakeRedeems.Count == 2 && _fakePoints["biscoitao"] == 210 && _fakePoints["yetz"] == 120
+                && redeemSummary.Contains("(210/500 pontos, resgatou") && redeemSummary.Contains("(120/500 pontos)"),
+                $"pedidos={string.Join(" | ", _fakeRedeems)} saldo={_fakePoints["biscoitao"]}/{_fakePoints["yetz"]} {redeemSummary}");
+
+            // Sem a Kick vinculada no jogo o PokeIdle devolve os pontos: o deck não resgata de novo e para nesta conta.
+            // Salvar Lives → Canais… volta a resgatar; sem o login da Kick no perfil, avisa no menu.
+            _fakePoints["biscoitao"] += 500;
+            await RedeemKickAsync();
+            await RedeemKickAsync();
+            string stoppedSummary = LivesSummary(0);
+            bool stopped = _redeem[0].Stopped is not null && _fakeRedeems.Count == 2;
+            for (int i = 0; i < 20; i++)
+            {
+                var login = (await kickCookies.GetCookiesAsync("https://kick.com")).Where(c => c.Name == "session_token").ToList();
+                if (login.Count == 0)
+                    break;
+                login.ForEach(kickCookies.DeleteCookie);
+                await Task.Delay(250);
+            }
+            _redeem[0].Restart();
+            await RedeemKickAsync();
+            string noLoginSummary = LivesSummary(0);
+            Check("pontos da Kick: os pontos voltaram (sem vínculo no jogo) para na conta; sem login avisa",
+                stopped && stoppedSummary.Contains("resgate parado: os pontos voltaram") && _fakeRedeems.Count == 2
+                && _redeem[0].NoLogin && noLoginSummary.Contains("resgate: entre na Kick"),
+                $"parou={stopped} pedidos={_fakeRedeems.Count} | {stoppedSummary} | {noLoginSummary}");
+            _config.KickRedeem = false;
+            var redeemPath = Path.Combine(_root, "deck-resgate.json");
+            File.WriteAllText(redeemPath, "{ \"KickRedeem\": true, \"KickReward\": \"Lure\" }");
+            var redeemConfig = DeckConfig.Load(redeemPath);
+            File.WriteAllText(redeemPath, "{ \"KickRedeem\": true, \"KickReward\": 7 }");
+            var badReward = DeckConfig.Load(redeemPath);
+            Check("pontos da Kick: o resgate fica no deck.json (desligado de fábrica)",
+                redeemConfig.KickRedeem && redeemConfig.KickReward == KickReward.Lure && !new DeckConfig().KickRedeem
+                && badReward.KickRedeem && badReward.KickReward == KickReward.Xp,
+                $"{redeemConfig.KickRedeem}/{redeemConfig.KickReward} inválido→{badReward.KickReward}");
             await WaitFor(() => _panes.All(p => p.Status == PaneStatus.Ok), 20);
             _kickLive.Clear();
 

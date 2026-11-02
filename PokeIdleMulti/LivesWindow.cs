@@ -213,6 +213,40 @@ internal sealed class LivesWindow : Form
         }
     }
 
+    /// <summary>
+    /// Roda no player de cada live da Kick aberta e carregada o script que <paramref name="script"/> monta para o
+    /// canal dela, esperando a promessa dele acabar (o resgate dos pontos espera a Kick), e devolve o texto que ele
+    /// entrega, por canal ("" quando a página não respondeu).
+    /// </summary>
+    public async Task<List<(string Channel, string Result)>> EvalKickAsync(Func<string, string> script)
+    {
+        var results = new List<(string, string)>();
+        foreach (var page in _pages.Skip(_kickStart).Where(p => p.Kick is not null && p.Loaded).ToList())
+        {
+            if (IsDisposed || page.Kick is not string channel || page.View.CoreWebView2 is not CoreWebView2 core)
+                continue;
+            string result = "";
+            try
+            {
+                var call = core.CallDevToolsProtocolMethodAsync("Runtime.evaluate",
+                    JsonSerializer.Serialize(new { expression = script(channel), awaitPromise = true, returnByValue = true }));
+                if (await Task.WhenAny(call, Task.Delay(TimeSpan.FromSeconds(30))) == call)
+                {
+                    using var doc = JsonDocument.Parse(await call);
+                    if (doc.RootElement.TryGetProperty("result", out var value) && value.TryGetProperty("value", out var text)
+                        && text.ValueKind == JsonValueKind.String)
+                        result = text.GetString()!;
+                }
+            }
+            catch
+            {
+                // A página recarregou ou fechou no meio: fica para a próxima conferência.
+            }
+            results.Add((channel, result));
+        }
+        return results;
+    }
+
     /// <summary>As abas da Kick abertas (onde ficam o chat e o resgate dos pontos do canal).</summary>
     public IEnumerable<(int Tab, string Name)> KickTabs => _pages
         .Select((page, tab) => (Page: page, Tab: tab))

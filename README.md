@@ -104,6 +104,12 @@ A cada segundo o deck confere quanto a conta tem e compra no **Market do NPC** o
   dos pontos e o espaço do popup de escolher o bônus. Essas páginas só existem enquanto o 💰 está aberto;
   fechar devolve a memória, e o player continua rendendo. A altura da janela muda arrastando a borda, e o deck
   guarda. "Próxima conta ▶" passa para a conta seguinte; "Página inteira" mostra a página do canal toda.
+- **Resgate automático** (Lives → Canais…, desligado de fábrica): escolha um dos 3 bônus do PokeIdle
+  (+15% XP por 300 pontos, Captura por 500 ou Shiny por 1000). A cada 5 min o deck confere o saldo de cada
+  live da Kick aberta, pelo player e com o login da Kick da conta, e resgata 1 bônus naquele canal se der. As
+  horas acumulam no jogo. O saldo e o último resgate aparecem no menu Lives, ao lado de cada live. Resgate
+  recusado pela Kick: tenta de novo naquele canal em 30 min. Se os pontos voltarem (Kick não vinculada no
+  jogo), o deck para de resgatar naquela conta e avisa; salvar Lives → Canais… de novo volta a resgatar.
 
 ### 🗳 Voto no TopIdle
 
@@ -131,7 +137,7 @@ Quase tudo se configura pelas janelas do deck, e fica salvo sozinho em
 |---|---|
 | Botão direito na conta, na barra de cima | Renomear, recarregar, som, desligar, lives nesta conta |
 | **Lives** | Quais contas abrem lives; mostrar a janela das lives |
-| **Lives → Canais…** | Canais da Twitch e da Kick (em ordem de prioridade), modo da Twitch e quantas lives da Kick abrir por conta |
+| **Lives → Canais…** | Canais da Twitch e da Kick (em ordem de prioridade), modo da Twitch, quantas lives da Kick abrir por conta e o resgate automático dos pontos (qual bônus) |
 | **🛒** no cabeçalho | Recompra da conta: pokebola, revives, poções, ouro mínimo |
 | **⚡ ULTRA** (setinha) | ULTRA em todas as contas e o menos animações |
 | **− Zoom +** | Zoom de todas as contas |

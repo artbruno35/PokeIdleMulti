@@ -11,6 +11,9 @@ internal enum DeckLayout { Grid, Columns, Focus }
 /// </summary>
 internal enum TwitchMode { Presence, Chat, Live }
 
+/// <summary>O bônus do PokeIdle que o deck resgata com os pontos de cada canal da Kick (1 h cada, as horas acumulam).</summary>
+internal enum KickReward { Xp, Capture, Lure }
+
 /// <summary>Preferências do deck salvas entre uma execução e outra.</summary>
 internal sealed class DeckConfig
 {
@@ -88,6 +91,11 @@ internal sealed class DeckConfig
     /// <summary>Altura da janela dos pontos da Kick, em pixels a 100% de escala (muda arrastando a borda dela).</summary>
     public int KickPointsHeight { get; set; } = 640;
 
+    /// <summary>Resgatar sozinho, com os pontos de cada live da Kick aberta, o bônus <see cref="KickReward"/> (Lives → Canais…).</summary>
+    public bool KickRedeem { get; set; }
+
+    public KickReward KickReward { get; set; } = KickReward.Xp;
+
     /// <summary>O que o botão kick fechou em cada conta.</summary>
     public KickLimit[] Kick { get; set; } = NewKick();
 
@@ -135,6 +143,8 @@ internal sealed class DeckConfig
         config.Restock = Fill(config.Restock, _ => new RestockConfig()).Select(r => (r ?? new RestockConfig()).Normalized()).ToArray();
         config.Focused = Math.Clamp(config.Focused, 0, Accounts - 1);
         config.KickPointsHeight = Math.Clamp(config.KickPointsHeight, 300, 3000);
+        if (!Enum.IsDefined(config.KickReward))
+            config.KickReward = KickReward.Xp;
         return config;
     }
 
