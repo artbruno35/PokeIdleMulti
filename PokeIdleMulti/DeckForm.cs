@@ -18,9 +18,12 @@ internal sealed class DeckForm : Form
 
     // Sem isso o navegador desacelera as contas escondidas, minimizadas ou atrás de outras janelas;
     // e o autoplay deixa as lives da Kick tocarem (sem som) sem precisar de clique.
+    // --process-per-site: as páginas do mesmo site num perfil dividem um processo. As lives da Kick de uma
+    // conta ficam num só, sem carregar o site inteiro uma vez por live: medido, 3 lives caem de ~655 MB
+    // para ~560 MB. Cada conta é um perfil, e perfis nunca dividem processo: o jogo fica separado.
     private const string BrowserArguments =
         "--disable-background-timer-throttling --disable-backgrounding-occluded-windows " +
-        "--disable-renderer-backgrounding --autoplay-policy=no-user-gesture-required";
+        "--disable-renderer-backgrounding --autoplay-policy=no-user-gesture-required --process-per-site";
 
     private static readonly string DataRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PokeIdleMulti");
@@ -303,8 +306,14 @@ internal sealed class DeckForm : Form
     /// <summary>Dados trazidos de outro PC: reinstala da pasta daqui as extensões cujo caminho antigo sumiu.</summary>
     private Task RepairExtensions(CoreWebView2 core) => _store.RepairAsync(core.Profile);
 
+    // As lives do autoteste vêm de outro site (lives.test), como a Kick e o jogo são sites diferentes: assim
+    // dividem processo entre elas, mas não com o jogo.
     private Action<CoreWebView2>? SelfTestSetup => _selfTest
-        ? core => core.SetVirtualHostNameToFolderMapping("deck.test", Path.Combine(_root, "site"), CoreWebView2HostResourceAccessKind.Allow)
+        ? core =>
+        {
+            core.SetVirtualHostNameToFolderMapping("deck.test", Path.Combine(_root, "site"), CoreWebView2HostResourceAccessKind.Allow);
+            core.SetVirtualHostNameToFolderMapping("lives.test", Path.Combine(_root, "site"), CoreWebView2HostResourceAccessKind.Allow);
+        }
         : null;
 
     protected override void OnHandleCreated(EventArgs e)
@@ -1237,11 +1246,11 @@ internal sealed class DeckForm : Form
     // ---------- Lives ----------
 
     private IEnumerable<string> TwitchUrls() => _selfTest
-        ? new[] { "https://deck.test/twitch.html" }
+        ? new[] { "https://lives.test/twitch.html" }
         : _config.TwitchUrls();
 
     private string KickUrl(string channel) => _selfTest
-        ? $"https://deck.test/kick.html?canal={Uri.EscapeDataString(channel)}"
+        ? $"https://lives.test/kick.html?canal={Uri.EscapeDataString(channel)}"
         : $"https://kick.com/{channel}";
 
     private async Task OpenLivesAsync(int index)
@@ -2066,6 +2075,16 @@ internal sealed class DeckForm : Form
             Check("kick: abrir todas de novo volta às 2 primeiras da lista no ar",
                 reopened && _panes[0].KickState == "ligado" && !_config.Kick[0].Limited,
                 $"Kick={KickNow()} botão={_panes[0].KickState}");
+
+            // As lives da Kick da conta dividem um processo (--process-per-site), e o jogo fica em outro.
+            var liveProcesses = _env is null ? new List<CoreWebView2ProcessExtendedInfo>()
+                : (await _env.GetProcessExtendedInfosAsync())
+                    .Where(p => p.AssociatedFrameInfos.Any(f => f.Source.Contains("/kick.html?canal="))).ToList();
+            var livePages = liveProcesses.SelectMany(p => p.AssociatedFrameInfos).Select(f => f.Source).ToList();
+            Check("lives da Kick da conta num processo só, separado do jogo",
+                liveProcesses.Count == 1 && livePages.Count(s => s.Contains("/kick.html?canal=")) == 2
+                && !livePages.Any(s => s.Contains("game.html")),
+                $"processos com live={liveProcesses.Count} páginas={string.Join(", ", livePages)}");
 
             // Conferência das lives tocando: a do biscoitao anda (▶); a do yetz fica parada (a 1ª conferência
             // só anota onde o vídeo está) e, depois de duas paradas seguidas, é recarregada (⟳1).

@@ -146,8 +146,9 @@ levar o deck para outro PC, copie essa pasta inteira (com o deck fechado) ou ent
 - **Uma conta do jogo em um lugar só.** Abrir a mesma conta no deck e no navegador derruba uma das duas.
 - **Conta parada na tela de login** vai juntando memória (o captcha do login se refaz sozinho). O cabeçalho
   avisa: entre na conta ou desligue no ⏻.
-- **RAM:** cada live da Kick gasta uns 260 MB, e a barra de baixo mostra quanto o jogo, as lives e o navegador
-  estão usando. Num notebook com 8 GB, abra poucas lives, use o ULTRA e desligue as contas que não usa.
+- **RAM:** cada live da Kick gasta uns 200 MB (o site e o player da Kick, não o vídeo, que fica em 160p). As
+  lives de uma conta dividem um processo, o que tira uns 15%. A barra de baixo mostra quanto o jogo, as lives
+  e o navegador estão usando. Num notebook com 8 GB, abra poucas lives, use o ULTRA e desligue as contas que não usa.
 - **O bônus das lives** vale para a conta do jogo vinculada à Twitch/Kick logada nas lives daquela conta.
   Marque em Lives só a conta vinculada.
 - **Kick:** os pontos só contam com o vídeo tocando; o deck confere e recarrega, mas acompanhe o ▶ na barra de
