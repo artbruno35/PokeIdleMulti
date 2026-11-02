@@ -85,16 +85,24 @@ internal sealed class DeckConfig
     /// </summary>
     public List<string> KickChannels { get; set; } = new() { "biscoitao", "yetz", "surskity" };
 
-    /// <summary>Quantas lives da Kick abrir em cada conta (Lives → Canais…). De fábrica 2, as que a Kick conta para os pontos.</summary>
+    /// <summary>Quantas lives da Kick abrir em cada conta (Lives → Config…). De fábrica 2, as que a Kick conta para os pontos.</summary>
     public int KickLives { get; set; } = KickLive.DefaultSlots;
 
     /// <summary>Altura da janela dos pontos da Kick, em pixels a 100% de escala (muda arrastando a borda dela).</summary>
     public int KickPointsHeight { get; set; } = 640;
 
-    /// <summary>Resgatar sozinho, com os pontos de cada live da Kick aberta, o bônus <see cref="KickReward"/> (Lives → Canais…).</summary>
-    public bool KickRedeem { get; set; }
+    /// <summary>
+    /// O bônus que cada conta resgata sozinha com os pontos das lives da Kick abertas nela (Lives → Config…);
+    /// null: a conta não resgata.
+    /// </summary>
+    public KickReward?[] RedeemKick { get; set; } = new KickReward?[Accounts];
 
-    public KickReward KickReward { get; set; } = KickReward.Xp;
+    /// <summary>Da versão em que o resgate valia para todas as contas: lidos uma vez e convertidos em <see cref="RedeemKick"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? KickRedeem { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public KickReward? KickReward { get; set; }
 
     /// <summary>O que o botão kick fechou em cada conta.</summary>
     public KickLimit[] Kick { get; set; } = NewKick();
@@ -143,8 +151,13 @@ internal sealed class DeckConfig
         config.Restock = Fill(config.Restock, _ => new RestockConfig()).Select(r => (r ?? new RestockConfig()).Normalized()).ToArray();
         config.Focused = Math.Clamp(config.Focused, 0, Accounts - 1);
         config.KickPointsHeight = Math.Clamp(config.KickPointsHeight, 300, 3000);
-        if (!Enum.IsDefined(config.KickReward))
-            config.KickReward = KickReward.Xp;
+        config.RedeemKick = Fill(config.RedeemKick, _ => null);
+        if (config.KickRedeem == true)
+            config.RedeemKick = config.RedeemKick.Select(r => (PokeIdleMulti.KickReward?)(r ?? config.KickReward ?? PokeIdleMulti.KickReward.Xp)).ToArray();
+        config.KickRedeem = null;
+        config.KickReward = null;
+        // Um número fora da lista (deck.json editado à mão) vira o XP, sem desligar o resgate da conta.
+        config.RedeemKick = config.RedeemKick.Select(r => r is KickReward reward && !Enum.IsDefined(reward) ? PokeIdleMulti.KickReward.Xp : r).ToArray();
         return config;
     }
 

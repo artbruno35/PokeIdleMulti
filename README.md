@@ -35,7 +35,7 @@ configurações continuam, porque não ficam no exe.
    extensões, lives e voto), e ela não gasta nada até ligar de novo. Uma conta parada na tela de login gasta
    memória à toa: entre nela ou desligue.
 4. **Lives (opcional).** Em **Lives**, marque a conta vinculada à sua Twitch/Kick (normalmente a main). Em
-   **Lives → Mostrar as lives**, entre na Twitch e na Kick uma vez. Em **Lives → Canais…** ficam os canais e
+   **Lives → Mostrar as lives**, entre na Twitch e na Kick uma vez. Em **Lives → Config…** ficam os canais e
    quantas lives da Kick abrir.
 5. **Recompra (opcional).** O 🛒 no cabeçalho de cada conta abre a recompra dela. Confira os valores antes de
    ligar.
@@ -92,9 +92,9 @@ A cada segundo o deck confere quanto a conta tem e compra no **Market do NPC** o
 
 - **Twitch:** de fábrica, só a **presença nos chats** (uma conexão com o chat de cada canal, sem página
   aberta), que é o que o jogo confere e quase não gasta nada. Usa o login da Twitch da janela de lives da
-  conta e reconecta sozinha quando a internet cai ou o PC dorme. Em Lives → Canais… dá para trocar por abrir a
+  conta e reconecta sozinha quando a internet cai ou o PC dorme. Em Lives → Config… dá para trocar por abrir a
   página do chat ou a live inteira.
-- **Kick:** abre as primeiras lives da lista que estiverem no ar, até o número escolhido em Lives → Canais…
+- **Kick:** abre as primeiras lives da lista que estiverem no ar, até o número escolhido em Lives → Config…
   (2 de fábrica: testado, a Kick só dá pontos em 2 lives ao mesmo tempo por conta). Live offline não fica
   aberta. Cada live toca só o player da Kick (player.kick.com), que rende os pontos igual à página do canal e
   gasta uns 40% menos; o vídeo vem na menor qualidade, sem propaganda nem rastreadores, numa janela fora da
@@ -104,12 +104,12 @@ A cada segundo o deck confere quanto a conta tem e compra no **Market do NPC** o
   dos pontos e o espaço do popup de escolher o bônus. Essas páginas só existem enquanto o 💰 está aberto;
   fechar devolve a memória, e o player continua rendendo. A altura da janela muda arrastando a borda, e o deck
   guarda. "Próxima conta ▶" passa para a conta seguinte; "Página inteira" mostra a página do canal toda.
-- **Resgate automático** (Lives → Canais…, desligado de fábrica): escolha um dos 3 bônus do PokeIdle
-  (+15% XP por 300 pontos, Captura por 500 ou Shiny por 1000). A cada 5 min o deck confere o saldo de cada
-  live da Kick aberta, pelo player e com o login da Kick da conta, e resgata 1 bônus naquele canal se der. As
-  horas acumulam no jogo. O saldo e o último resgate aparecem no menu Lives, ao lado de cada live. Resgate
+- **Resgate automático** (Lives → Config…, uma linha por conta, nenhuma marcada de fábrica): marque as contas
+  que resgatam e o bônus do PokeIdle de cada uma (+15% XP por 300 pontos, Captura por 500 ou Shiny por 1000).
+  A cada 5 min o deck confere o saldo de cada live da Kick aberta nessas contas, pelo player e com o login da
+  Kick da conta, e resgata 1 bônus naquele canal se der. As horas acumulam no jogo. O saldo e o último resgate aparecem no menu Lives, ao lado de cada live. Resgate
   recusado pela Kick: tenta de novo naquele canal em 30 min. Se os pontos voltarem (Kick não vinculada no
-  jogo), o deck para de resgatar naquela conta e avisa; salvar Lives → Canais… de novo volta a resgatar.
+  jogo), o deck para de resgatar naquela conta e avisa; salvar Lives → Config… de novo volta a resgatar.
 
 ### 🗳 Voto no TopIdle
 
@@ -137,7 +137,7 @@ Quase tudo se configura pelas janelas do deck, e fica salvo sozinho em
 |---|---|
 | Botão direito na conta, na barra de cima | Renomear, recarregar, som, desligar, lives nesta conta |
 | **Lives** | Quais contas abrem lives; mostrar a janela das lives |
-| **Lives → Canais…** | Canais da Twitch e da Kick (em ordem de prioridade), modo da Twitch, quantas lives da Kick abrir por conta e o resgate automático dos pontos (qual bônus) |
+| **Lives → Config…** | Canais da Twitch e da Kick (em ordem de prioridade), modo da Twitch, quantas lives da Kick abrir por conta e o resgate automático dos pontos (quais contas e qual bônus em cada) |
 | **🛒** no cabeçalho | Recompra da conta: pokebola, revives, poções, ouro mínimo |
 | **⚡ ULTRA** (setinha) | ULTRA em todas as contas e o menos animações |
 | **− Zoom +** | Zoom de todas as contas |

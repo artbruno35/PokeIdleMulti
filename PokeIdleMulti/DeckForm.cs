@@ -572,7 +572,7 @@ internal sealed class DeckForm : Form
             if (_lives[i] is null)
                 pane.SetKick(false, false, _presence[i] is null
                     ? "As lives estão desligadas nesta conta (ligue em Lives, na barra de cima)"
-                    : "Nenhum canal da Kick na lista (Lives → Canais…)");
+                    : "Nenhum canal da Kick na lista (Lives → Config…)");
             else if (_config.Kick[i].Limited)
                 pane.SetKick(true, true, "Lives da Kick fechadas nesta conta: " +
                     (_config.Kick[i].Slots == 0 ? "todas" : KickShutText(i)) +
@@ -654,7 +654,7 @@ internal sealed class DeckForm : Form
             // ▶ tocando, ‖ parada (o deck manda tocar e, se continuar, recarrega: ⟳ quantas vezes). O ‖ e não o
             // ⏸: esse só existe nas fontes de emoji, que o desenham como um botão quadrado.
             // Com o resgate ligado, o saldo de cada uma entre parênteses: (230/300 pontos, resgatou 14:05).
-            var redeem = _config.KickRedeem ? _redeem[index] : null;
+            var redeem = _config.RedeemKick[index] is not null ? _redeem[index] : null;
             var playback = window.KickPlayback.Select(k => k.Channel
                 + (k.Playing == true ? " ▶" : k.Playing == false ? " ‖" : "") + (k.Reloads > 0 ? $" ⟳{k.Reloads}" : "")
                 + (redeem?.Text(k.Channel) is { Length: > 0 } points ? $" ({points})" : ""));
@@ -699,7 +699,8 @@ internal sealed class DeckForm : Form
             _ = CheckKickAsync();
         if (!_selfTest && _seconds % 30 == 15)
             _ = WatchKickAsync();
-        if (!_selfTest && _config.KickRedeem && !_kickRedeeming && DateTime.Now >= _kickRedeemAt && _lives.Any(l => l is not null))
+        if (!_selfTest && !_kickRedeeming && DateTime.Now >= _kickRedeemAt
+            && Enumerable.Range(0, Accounts).Any(i => _config.RedeemKick[i] is not null && _lives[i] is not null))
             _ = RedeemKickAsync();
         UpdateVotes();
     }
@@ -1445,8 +1446,8 @@ internal sealed class DeckForm : Form
     private string KickApi => _selfTest ? "https://kick.test" : "https://kick.com";
 
     /// <summary>
-    /// A cada 5 min, com o resgate ligado em Lives → Canais…: em cada conta, o saldo de cada live da Kick aberta e,
-    /// se der, 1 resgate do bônus escolhido em cada uma (as horas acumulam no jogo).
+    /// A cada 5 min, nas contas com o resgate marcado em Lives → Config…: o saldo de cada live da Kick aberta na conta
+    /// e, se der, 1 resgate do bônus escolhido para ela em cada uma (as horas acumulam no jogo).
     /// </summary>
     private async Task RedeemKickAsync()
     {
@@ -1456,14 +1457,13 @@ internal sealed class DeckForm : Form
         {
             for (int i = 0; i < Accounts; i++)
             {
-                if (_lives[i] is not LivesWindow window || !window.KickChannels.Any())
+                if (_config.RedeemKick[i] is not KickReward reward || _lives[i] is not LivesWindow window || !window.KickChannels.Any())
                     continue;
                 var redeemer = _redeem[i];
                 var token = await ReadKickTokenAsync(i);
                 redeemer.NoLogin = token is null;
                 if (token is null)
                     continue;
-                var reward = _config.KickReward;
                 foreach (var (channel, result) in await window.EvalKickAsync(c => redeemer.Script(KickApi, c, token, reward)))
                     if (redeemer.Apply(channel, result) is string note)
                         _panes[i].Note(note);
@@ -1637,7 +1637,7 @@ internal sealed class DeckForm : Form
         items.Add(new ToolStripSeparator());
         items.Add("Mostrar as lives (para entrar na Twitch/Kick ou resgatar pontos da Kick)", null, (_, _) => ShowLives())
             .Enabled = _lives.Any(l => l is not null);
-        items.Add("Canais…", null, async (_, _) => await EditChannelsAsync());
+        items.Add("Config…", null, async (_, _) => await EditChannelsAsync());
     }
 
     private void ShowLives()
@@ -1677,7 +1677,7 @@ internal sealed class DeckForm : Form
     private async Task EditChannelsAsync()
     {
         using var dialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, _config.KickLives,
-            _config.KickRedeem, _config.KickReward);
+            _config.AccountNames, _config.RedeemKick);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
         _config.TwitchChannels = dialog.TwitchChannels;
@@ -1685,8 +1685,7 @@ internal sealed class DeckForm : Form
         _config.TwitchMode = dialog.TwitchMode;
         SetKickLives(dialog.KickLives);
         // Salvar de novo também volta a resgatar na conta que parou (depois de vincular a Kick no jogo).
-        _config.KickRedeem = dialog.KickRedeem;
-        _config.KickReward = dialog.KickReward;
+        _config.RedeemKick = dialog.RedeemKick;
         foreach (var redeemer in _redeem)
             redeemer.Restart();
         SaveConfig();
@@ -2304,14 +2303,15 @@ internal sealed class DeckForm : Form
                 killed > 0 && reopenedNow && loadedAgain && Biscoitao() is (true, 2) && livesMotion.Count == 3 && livesMotion.All(m => m == "true"),
                 $"processos fechados={killed} reabriu na hora={reopenedNow} carregou depois={loadedAgain} sem animações={string.Join(",", livesMotion)} {LivesSummary(0)}");
 
-            // Resgate dos pontos (Lives → Canais…), Captura (500), com o login da conta: o cookie session_token vai como
-            // Bearer. O biscoitao tem 1210: 1 resgate por conferência, até não dar mais; o yetz, com 120, não resgata.
+            // Resgate dos pontos (Lives → Config…, cada conta com o seu): a conta 1 resgata Captura (500), com o login
+            // dela: o cookie session_token vai como Bearer. O biscoitao tem 1210: 1 resgate por conferência, até não
+            // dar mais; o yetz, com 120, não resgata.
             var kickCookies = _panes[0].Core!.CookieManager;
             kickCookies.AddOrUpdateCookie(kickCookies.CreateCookie("session_token", "123%7Cabc", "kick.com", "/"));
-            using (var redeemDialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, 2, true, KickReward.Capture))
+            using (var redeemDialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, 2,
+                _config.AccountNames, new KickReward?[] { KickReward.Capture, null, KickReward.Lure, null }))
             {
-                _config.KickRedeem = redeemDialog.KickRedeem;
-                _config.KickReward = redeemDialog.KickReward;
+                _config.RedeemKick = redeemDialog.RedeemKick;
                 // Como a janela fica, para conferir de olho (aparece um instante).
                 redeemDialog.Show(this);
                 await Task.Delay(500);
@@ -2328,13 +2328,14 @@ internal sealed class DeckForm : Form
             string redeemSummary = LivesSummary(0);
             bool ulid = firstRedeem.Count == 1 && System.Text.RegularExpressions.Regex.IsMatch(firstRedeem[0],
                 "^biscoitao cap Bearer 123\\|abc \\{\"transaction_id\":\"[0-9A-HJKMNP-TV-Z]{26}\",\"message\":\"\"\\}$");
-            Check("pontos da Kick: resgata o bônus escolhido com o login da conta, 1 por canal a cada conferência, só com saldo",
-                _config.KickRedeem && ulid && _fakeRedeems.Count == 2 && _fakePoints["biscoitao"] == 210 && _fakePoints["yetz"] == 120
+            Check("pontos da Kick: resgata o bônus escolhido na conta, com o login dela, 1 por canal a cada conferência, só com saldo",
+                _config.RedeemKick.SequenceEqual(new KickReward?[] { KickReward.Capture, null, KickReward.Lure, null })
+                && ulid && _fakeRedeems.Count == 2 && _fakePoints["biscoitao"] == 210 && _fakePoints["yetz"] == 120
                 && redeemSummary.Contains("(210/500 pontos, resgatou") && redeemSummary.Contains("(120/500 pontos)"),
                 $"pedidos={string.Join(" | ", _fakeRedeems)} saldo={_fakePoints["biscoitao"]}/{_fakePoints["yetz"]} {redeemSummary}");
 
             // Sem a Kick vinculada no jogo o PokeIdle devolve os pontos: o deck não resgata de novo e para nesta conta.
-            // Salvar Lives → Canais… volta a resgatar; sem o login da Kick no perfil, avisa no menu.
+            // Salvar Lives → Config… volta a resgatar; sem o login da Kick no perfil, avisa no menu.
             _fakePoints["biscoitao"] += 500;
             await RedeemKickAsync();
             await RedeemKickAsync();
@@ -2355,16 +2356,31 @@ internal sealed class DeckForm : Form
                 stopped && stoppedSummary.Contains("resgate parado: os pontos voltaram") && _fakeRedeems.Count == 2
                 && _redeem[0].NoLogin && noLoginSummary.Contains("resgate: entre na Kick"),
                 $"parou={stopped} pedidos={_fakeRedeems.Count} | {stoppedSummary} | {noLoginSummary}");
-            _config.KickRedeem = false;
+
+            // Conta desmarcada não resgata nem confere o saldo, mesmo logada e com pontos.
+            kickCookies.AddOrUpdateCookie(kickCookies.CreateCookie("session_token", "123%7Cabc", "kick.com", "/"));
+            _config.RedeemKick[0] = null;
+            _redeem[0].Restart();
+            await RedeemKickAsync();
+            string offSummary = LivesSummary(0);
+            Check("pontos da Kick: conta desmarcada não resgata nem confere o saldo",
+                _fakeRedeems.Count == 2 && _redeem[0].Text("biscoitao") == "" && !offSummary.Contains("pontos"), offSummary);
+            _config.RedeemKick = new KickReward?[Accounts];
+
+            // deck.json: o de antes (um resgate para todas as contas) vira o mesmo bônus em cada conta; um número fora
+            // da lista vira o XP; de fábrica nenhuma conta resgata.
             var redeemPath = Path.Combine(_root, "deck-resgate.json");
             File.WriteAllText(redeemPath, "{ \"KickRedeem\": true, \"KickReward\": \"Lure\" }");
             var redeemConfig = DeckConfig.Load(redeemPath);
-            File.WriteAllText(redeemPath, "{ \"KickRedeem\": true, \"KickReward\": 7 }");
-            var badReward = DeckConfig.Load(redeemPath);
-            Check("pontos da Kick: o resgate fica no deck.json (desligado de fábrica)",
-                redeemConfig.KickRedeem && redeemConfig.KickReward == KickReward.Lure && !new DeckConfig().KickRedeem
-                && badReward.KickRedeem && badReward.KickReward == KickReward.Xp,
-                $"{redeemConfig.KickRedeem}/{redeemConfig.KickReward} inválido→{badReward.KickReward}");
+            redeemConfig.Save(redeemPath);
+            string redeemSaved = File.ReadAllText(redeemPath);
+            File.WriteAllText(redeemPath, "{ \"RedeemKick\": [ \"Capture\", null, 7 ] }");
+            var perAccount = DeckConfig.Load(redeemPath);
+            Check("pontos da Kick: o resgate de cada conta fica no deck.json (nenhuma de fábrica; o de antes vale para todas)",
+                redeemConfig.RedeemKick.All(r => r == KickReward.Lure) && !redeemSaved.Contains("\"KickRedeem\"") && !redeemSaved.Contains("\"KickReward\"")
+                && perAccount.RedeemKick.SequenceEqual(new KickReward?[] { KickReward.Capture, null, KickReward.Xp, null })
+                && new DeckConfig().RedeemKick.All(r => r is null),
+                $"antes→{string.Join(",", redeemConfig.RedeemKick)} por conta→{string.Join(",", perAccount.RedeemKick.Select(r => r?.ToString() ?? "não"))}");
             await WaitFor(() => _panes.All(p => p.Status == PaneStatus.Ok), 20);
             _kickLive.Clear();
 
@@ -2394,9 +2410,10 @@ internal sealed class DeckForm : Form
                 $"antes={legacy.KickLives}:{string.Join(",", legacy.Kick.Select(k => k.Slots?.ToString() ?? "todas"))} " +
                 $"com 3={string.Join(",", three.Kick.Select(k => k.SlotsOf(3)))} 99→{tooMany.KickLives}");
 
-            // O campo em Lives → Canais…: com 3, a conta abre as 3 primeiras da lista (o autoteste não pergunta à Kick
+            // O campo em Lives → Config…: com 3, a conta abre as 3 primeiras da lista (o autoteste não pergunta à Kick
             // quem está no ar, então conta todas como no ar), e a janela dos pontos põe as 3 colunas lado a lado.
-            using (var channelsDialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, 3))
+            using (var channelsDialog = new ChannelsDialog(_config.TwitchChannels, _config.KickChannels, _config.TwitchMode, 3,
+                _config.AccountNames, _config.RedeemKick))
                 SetKickLives(channelsDialog.KickLives);
             CloseLives(0);
             await OpenLivesAsync(0);

@@ -38,7 +38,7 @@ internal sealed class KickRedeemer
     /// <summary>Sem o login da Kick no perfil da conta (as lives tocam, mas não dá para resgatar).</summary>
     public bool NoLogin { get; set; }
 
-    /// <summary>Volta a resgatar do zero (ao salvar Lives → Canais…, depois de vincular a Kick no jogo).</summary>
+    /// <summary>Volta a resgatar do zero (ao salvar Lives → Config…, depois de vincular a Kick no jogo).</summary>
     public void Restart()
     {
         Stopped = null;
@@ -135,7 +135,7 @@ internal sealed class KickRedeemer
         string? note = null;
         if (RefundAt(c) is int limit && balance >= limit && Stopped is null)
         {
-            Stopped = "os pontos voltaram (vincule a Kick no jogo, em Bônus na Kick, e salve Lives → Canais… de novo)";
+            Stopped = "os pontos voltaram (vincule a Kick no jogo, em Bônus na Kick, e salve Lives → Config… de novo)";
             note = "Kick: os pontos do resgate voltaram (Kick não vinculada no jogo?); parei de resgatar nesta conta";
         }
         c.Cost = price;
