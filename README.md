@@ -53,6 +53,8 @@ configurações continuam, porque não ficam no exe.
   está rodando e os avisos (por exemplo, "na tela de login"). Com as contas em colunas, o cabeçalho se aperta
   para nenhum botão sumir.
 - **Zoom:** **− Zoom 100% +** na barra de cima muda todas as contas juntas (na setinha, de 50% a 150%).
+  Ampliar uma conta põe o zoom em 100%; voltar para a grade ou as colunas devolve o zoom de antes (por
+  exemplo, 50% para as 4 contas caberem na tela).
 - **⇄ Eco:** ligado, um clique numa conta se repete nas outras, no mesmo botão (pelo caminho e pelo texto
   dele, não pela posição na tela). Se a outra conta está numa tela sem esse botão, nada é clicado nela e o
   cabeçalho avisa. O que você digita nunca é repetido, para o chat do jogo não receber a mesma mensagem 4 vezes.

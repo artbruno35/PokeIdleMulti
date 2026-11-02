@@ -434,9 +434,22 @@ internal sealed class DeckForm : Form
 
     private void SetLayout(DeckLayout layout)
     {
+        bool entering = layout == DeckLayout.Focus && _config.Layout != DeckLayout.Focus;
+        bool leaving = layout != DeckLayout.Focus && _config.Layout == DeckLayout.Focus;
         _config.Layout = layout;
         if (layout != DeckLayout.Focus)
             _layoutBeforeFocus = layout;
+        // A conta ampliada fica em 100%; voltar para a grade ou as colunas devolve o zoom de antes (o que deixa
+        // as 4 contas cabendo na tela, como 50%).
+        if (entering)
+        {
+            _config.ZoomOutsideFocus = _config.Zoom[0];
+            SetZoomAll(1);
+        }
+        else if (leaving && _config.ZoomOutsideFocus is double zoom)
+        {
+            SetZoomAll(zoom);
+        }
         ArrangePanes();
         UpdateBar();
     }
@@ -1816,7 +1829,11 @@ internal sealed class DeckForm : Form
             SetLayout(DeckLayout.Grid);
 
             await Eval(_panes[0], "window.__t = 0; setInterval(() => window.__t++, 100); 1");
+            double zoomBefore = _config.Zoom[0];
+            bool AtZoom(double zoom) => _panes.All(p => Math.Abs(p.WebView.ZoomFactor - zoom) < 0.01);
+            SetZoomAll(0.5);
             FocusPane(1);
+            bool zoomFocused = AtZoom(1) && _zoomButton.Text == "Zoom 100%";
             await Task.Delay(3000);
             bool focused = _panes[1].Visible && _panes[1].Bounds == Cell(_grid.ClientRectangle, 0, 0, 1, 1)
                 && _panes.Where(p => p.Index != 1).All(p => !p.Visible);
@@ -1826,6 +1843,16 @@ internal sealed class DeckForm : Form
             ToggleFocus(1);
             await Task.Delay(500);
             Check("voltar para a grade", _config.Layout == DeckLayout.Grid && Shape(2, 2), Detail());
+            // Ampliar põe o zoom em 100%; voltar pelo mesmo botão ou pela grade devolve o de antes (50%).
+            bool zoomBack = AtZoom(0.5) && _zoomButton.Text == "Zoom 50%";
+            FocusPane(2);
+            bool zoomAgain = AtZoom(1);
+            SetLayout(DeckLayout.Grid);
+            bool zoomGrid = AtZoom(0.5) && _config.ZoomOutsideFocus is 0.5;
+            Check("ampliar põe o zoom em 100%, e voltar (pelo botão ou pela grade) devolve o de antes",
+                zoomFocused && zoomBack && zoomAgain && zoomGrid,
+                $"ampliou={zoomFocused} voltou={zoomBack} ampliou de novo={zoomAgain} pela grade={zoomGrid} ({_zoomButton.Text})");
+            SetZoomAll(zoomBefore);
 
             // Eco: um clique de verdade (pelo DevTools, como o mouse) na conta 1 se repete nas outras;
             // a conta 3 está "noutra tela" (sem o botão Mapa) e não clica nada.

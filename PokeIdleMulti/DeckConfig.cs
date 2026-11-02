@@ -32,6 +32,12 @@ internal sealed class DeckConfig
     /// <summary>Zoom da página de cada conta (Ctrl + roda do mouse).</summary>
     public double[] Zoom { get; set; } = { 1, 1, 1, 1 };
 
+    /// <summary>
+    /// O zoom da grade e das colunas, guardado ao ampliar uma conta (o foco põe tudo em 100%); voltar do foco
+    /// devolve este. Nulo enquanto não entrou no foco.
+    /// </summary>
+    public double? ZoomOutsideFocus { get; set; }
+
     public bool[] Muted { get; set; } = new bool[Accounts];
 
     /// <summary>Contas desligadas no botão ⏻: ficam no deck, mas não abrem o jogo (nem extensões, lives e voto).</summary>
