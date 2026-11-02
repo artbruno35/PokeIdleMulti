@@ -93,13 +93,15 @@ A cada segundo o deck confere quanto a conta tem e compra no **Market do NPC** o
   conta e reconecta sozinha quando a internet cai ou o PC dorme. Em Lives → Canais… dá para trocar por abrir a
   página do chat ou a live inteira.
 - **Kick:** abre as primeiras lives da lista que estiverem no ar, até o número escolhido em Lives → Canais…
-  (2 de fábrica, as que a Kick conta para os pontos). Live offline não fica aberta. O vídeo vem na menor
-  qualidade, sem propaganda nem rastreadores, numa janela fora da tela com o chat escondido (quase metade da
-  CPU a menos). A cada 30 s o deck confere se cada live está tocando e recarrega a que travou ou caiu.
+  (2 de fábrica: testado, a Kick só dá pontos em 2 lives ao mesmo tempo por conta). Live offline não fica
+  aberta. Cada live toca só o player da Kick (player.kick.com), que rende os pontos igual à página do canal e
+  gasta uns 40% menos; o vídeo vem na menor qualidade, sem propaganda nem rastreadores, numa janela fora da
+  tela. A cada 30 s o deck confere se cada live está tocando e recarrega a que travou ou caiu.
 - **Botão kick** de cada conta: escolher qual live da Kick fechar nela (ou todas), e abrir de novo.
-- **💰 Pontos da Kick:** mostra as lives da conta lado a lado, só com o rodapé do chat: o botão dos pontos e o
-  espaço do popup de escolher o bônus. A altura da janela muda arrastando a borda, e o deck guarda. "Próxima
-  conta ▶" passa para a conta seguinte; "Página inteira" mostra a live toda.
+- **💰 Pontos da Kick:** abre a página de cada canal da conta, lado a lado, só com o rodapé do chat: o botão
+  dos pontos e o espaço do popup de escolher o bônus. Essas páginas só existem enquanto o 💰 está aberto;
+  fechar devolve a memória, e o player continua rendendo. A altura da janela muda arrastando a borda, e o deck
+  guarda. "Próxima conta ▶" passa para a conta seguinte; "Página inteira" mostra a página do canal toda.
 
 ### 🗳 Voto no TopIdle
 
@@ -146,9 +148,9 @@ levar o deck para outro PC, copie essa pasta inteira (com o deck fechado) ou ent
 - **Uma conta do jogo em um lugar só.** Abrir a mesma conta no deck e no navegador derruba uma das duas.
 - **Conta parada na tela de login** vai juntando memória (o captcha do login se refaz sozinho). O cabeçalho
   avisa: entre na conta ou desligue no ⏻.
-- **RAM:** cada live da Kick gasta uns 200 MB (o site e o player da Kick, não o vídeo, que fica em 160p). As
-  lives de uma conta dividem um processo, o que tira uns 15%. A barra de baixo mostra quanto o jogo, as lives
-  e o navegador estão usando. Num notebook com 8 GB, abra poucas lives, use o ULTRA e desligue as contas que não usa.
+- **RAM:** cada live da Kick gasta uns 130 MB (só o player; a página do canal gastava uns 200). As lives de
+  uma conta dividem um processo. Com o 💰 aberto, a página de cada canal soma mais uns 200 MB até fechar. A
+  barra de baixo mostra quanto o jogo, as lives e o navegador estão usando. Num notebook com 8 GB, abra poucas lives, use o ULTRA e desligue as contas que não usa.
 - **O bônus das lives** vale para a conta do jogo vinculada à Twitch/Kick logada nas lives daquela conta.
   Marque em Lives só a conta vinculada.
 - **Kick:** os pontos só contam com o vídeo tocando; o deck confere e recarrega, mas acompanhe o ▶ na barra de

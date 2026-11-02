@@ -1249,8 +1249,15 @@ internal sealed class DeckForm : Form
         ? new[] { "https://lives.test/twitch.html" }
         : _config.TwitchUrls();
 
+    // A live da Kick toca só o player: ele avisa a Kick que a conta está assistindo, como a página do canal
+    // (testado: os pontos sobem igual), gastando uns 40% menos. A página do canal só abre para o chat e os
+    // pontos, com a janela das lives na tela.
     private string KickUrl(string channel) => _selfTest
         ? $"https://lives.test/kick.html?canal={Uri.EscapeDataString(channel)}"
+        : $"https://player.kick.com/{channel}";
+
+    private string KickChatUrl(string channel) => _selfTest
+        ? $"https://lives.test/kick.html?canal={Uri.EscapeDataString(channel)}&chat=1"
         : $"https://kick.com/{channel}";
 
     private async Task OpenLivesAsync(int index)
@@ -1278,7 +1285,8 @@ internal sealed class DeckForm : Form
         int kickSlots = Math.Min(_config.KickLives, _config.KickChannels.Count);
         if (urls.Count > 0 || kickSlots > 0)
         {
-            _lives[index] = await LivesWindow.CreateAsync(_env, _panes[index].ProfileName, _config.AccountNames[index], urls, kickSlots, SelfTestSetup);
+            _lives[index] = await LivesWindow.CreateAsync(_env, _panes[index].ProfileName, _config.AccountNames[index], urls, kickSlots,
+                KickChatUrl, SelfTestSetup);
             var window = _lives[index]!;
             window.NextRequested += () => ShowNextKick(index);
             window.PointsHeight = _config.KickPointsHeight;
@@ -1968,17 +1976,17 @@ internal sealed class DeckForm : Form
             Check("todas as páginas das lives visíveis para o navegador (vídeo de trás toca)",
                 visibility.Count == 3 && visibility.All(v => v == "\"visible\""), string.Join(", ", visibility));
 
-            // Fora da tela o chat da Kick fica escondido (gasta menos); nos pontos aparece só o rodapé, sem as
-            // mensagens; fechar esconde de novo.
+            // Fora da tela só tocam os players, sem página do chat. Nos pontos abre por cima de cada player a
+            // página do canal, só com o rodapé do chat (sem as mensagens); fechar fecha essas páginas.
             const string ChatShown = "(() => { const c = document.querySelector('#channel-chatroom'); return c ? getComputedStyle(c).display + ' ' " +
                 "+ getComputedStyle(document.querySelector('#chatroom-messages')).visibility : 'sem chat'; })()";
-            async Task<string> Chat() => lives0 is null ? "" : string.Join(",", await lives0.EvalAsync(ChatShown));
-            string chatParked = await Chat();
-            // 💰 Pontos da Kick: só as colunas de chat lado a lado (a página fica na largura de computador,
-            // encostada à direita), com a altura dos pontos (a tela baixa limita), no meio da tela.
+            int chatsParked = lives0?.ChatsOpen ?? -1;
+            // 💰 Pontos da Kick: só as colunas de chat lado a lado (a página do canal fica na largura de
+            // computador, encostada à direita), com a altura dos pontos (a tela baixa limita), no meio da tela.
             ShowKick(0);
+            bool chatsUp = await WaitFor(() => lives0 is not null && lives0.ChatsLoaded == 2, 15);
             await Task.Delay(300);
-            string chatShown = await Chat();
+            string chatShown = lives0 is null ? "" : string.Join(",", await lives0.EvalChatsAsync(ChatShown));
             var screenArea = lives0 is null ? Rectangle.Empty : Screen.FromControl(lives0).WorkingArea;
             var columns = lives0?.KickLayout.ToList() ?? new();
             int chatWidth = lives0?.LogicalToDeviceUnits(340) ?? 0, pageWidth = lives0?.LogicalToDeviceUnits(1100) ?? 0;
@@ -1989,12 +1997,12 @@ internal sealed class DeckForm : Form
             string layout = lives0 is null ? "" : $"janela={lives0.Bounds} área={screenArea} colunas={string.Join(" ", columns.Select(c => $"{c.Frame}/{c.View}"))}";
             lives0?.Close();
             await Task.Delay(300);
-            string chatAgain = await Chat();
+            int chatsAfter = lives0?.ChatsOpen ?? -1;
             Activate();
-            Check("chat da Kick escondido fora da tela, e nos pontos só o rodapé (sem as mensagens)",
-                chatParked == "\"sem chat\",\"none visible\",\"none visible\"" && chatShown == "\"sem chat\",\"block hidden\",\"block hidden\""
-                && chatAgain == chatParked && lives0 is { Parked: true, Visible: true },
-                $"fora={chatParked} mostrando={chatShown} fechou={chatAgain}");
+            Check("chat da Kick só abre com os pontos na tela (só o rodapé, sem as mensagens), e fecha ao sair",
+                chatsParked == 0 && chatsUp && chatShown == "\"block hidden\",\"block hidden\"" && chatsAfter == 0
+                && lives0 is { Parked: true, Visible: true },
+                $"fora={chatsParked} páginas de chat; mostrando={chatShown}; depois de fechar={chatsAfter}");
             Check("pontos da Kick: os 2 chats lado a lado, com a altura dos pontos", fits && sideBySide, layout);
 
             // Propaganda cortada nas lives: o pedido a um site de anúncio volta 403 do próprio deck.
@@ -2082,7 +2090,7 @@ internal sealed class DeckForm : Form
                     .Where(p => p.AssociatedFrameInfos.Any(f => f.Source.Contains("/kick.html?canal="))).ToList();
             var livePages = liveProcesses.SelectMany(p => p.AssociatedFrameInfos).Select(f => f.Source).ToList();
             Check("lives da Kick da conta num processo só, separado do jogo",
-                liveProcesses.Count == 1 && livePages.Count(s => s.Contains("/kick.html?canal=")) == 2
+                liveProcesses.Count == 1 && livePages.Count(s => s.Contains("/kick.html?canal=") && !s.Contains("chat=1")) == 2
                 && !livePages.Any(s => s.Contains("game.html")),
                 $"processos com live={liveProcesses.Count} páginas={string.Join(", ", livePages)}");
 
