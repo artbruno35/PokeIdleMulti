@@ -454,6 +454,13 @@ internal sealed class DeckForm : Form
             return;
         }
         string Header(string name) => e.Request.Headers.Contains(name) ? e.Request.Headers.GetHeader(name) : "-";
+        var rewards = new[]
+        {
+            new { id = "xp", title = "Bônus +15% XP PokeIdle", prompt = "1 hora de +15% de XP no PokeIdle.", cost = 300 },
+            new { id = "cap", title = "Bônus de +15% Capture Boost", prompt = "1 hora de +15% na chance de captura no PokeIdle.", cost = 500 },
+            new { id = "lure", title = "Bônus de +15% Secret Lure", prompt = "1 hora de +15% na chance de shiny no PokeIdle.", cost = 1000 },
+            new { id = "chat", title = "Capture o streamer", prompt = "", cost = 100 },
+        };
         string json;
         if (uri.AbsolutePath == "/integrity")
         {
@@ -490,23 +497,23 @@ internal sealed class DeckForm : Form
                 int cost = input.GetProperty("cost").GetInt32();
                 _fakeTwitch.Add($"resgate {channel} {input.GetProperty("rewardID").GetString()} {cost} {Header("Authorization")} " +
                                 input.GetProperty("transactionID").GetString());
+                // Como a Twitch: o custo, o título e a descrição (prompt) têm de ser os do bônus no canal.
+                var reward = rewards.FirstOrDefault(r => r.id == input.GetProperty("rewardID").GetString());
+                string? prompt = input.TryGetProperty("prompt", out var sent) && sent.ValueKind == JsonValueKind.String ? sent.GetString() : null;
+                bool matches = reward is not null && reward.cost == cost && reward.title == input.GetProperty("title").GetString()
+                               && reward.prompt == (prompt ?? "");
                 bool enough = _fakeTwitchPoints.GetValueOrDefault(channel) >= cost;
-                if (enough)
+                if (matches && enough)
                     _fakeTwitchPoints[channel] -= cost;
                 json = "{\"data\":{\"redeemCommunityPointsCustomReward\":" +
-                       (enough ? "{\"redemption\":{\"id\":\"r1\"},\"error\":null}" : "{\"redemption\":null,\"error\":{\"code\":\"INSUFFICIENT_POINTS\"}}") + "}}";
+                       (!matches ? "{\"redemption\":null,\"error\":{\"code\":\"PROPERTIES_MISMATCH\"}}"
+                           : enough ? "{\"redemption\":{\"id\":\"r1\"},\"error\":null}"
+                           : "{\"redemption\":null,\"error\":{\"code\":\"NOT_ENOUGH_POINTS\"}}") + "}}";
             }
             else
             {
                 string channel = variables.GetProperty("login").GetString() ?? "";
                 _fakeTwitch.Add($"saldo {channel} {Header("Authorization")} {Header("X-Device-Id")}");
-                var rewards = new[]
-                {
-                    new { id = "xp", title = "Bônus +15% XP PokeIdle", prompt = "1 hora de +15% de XP no PokeIdle.", cost = 300 },
-                    new { id = "cap", title = "Bônus de +15% Capture Boost", prompt = "1 hora de +15% na chance de captura no PokeIdle.", cost = 500 },
-                    new { id = "lure", title = "Bônus de +15% Secret Lure", prompt = "1 hora de +15% na chance de shiny no PokeIdle.", cost = 1000 },
-                    new { id = "chat", title = "Capture o streamer", prompt = "", cost = 100 },
-                };
                 json = JsonSerializer.Serialize(new
                 {
                     data = new

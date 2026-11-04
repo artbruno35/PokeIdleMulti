@@ -186,10 +186,11 @@ internal sealed class PointsRedeemer
                "  if (!reward) return { ...out, error: 'canal sem o bônus' };" +
                "  Object.assign(out, { cost: reward.cost, title: reward.title, paused: reward.isPaused || !reward.isInStock || !!reward.cooldownExpiresAt });" +
                "  if (!a.spend || out.paused || points < reward.cost || (a.refund !== null && points >= a.refund)) return out;" +
-               // O transactionID é um id novo a cada resgate (32 letras hexadecimais).
+               // O transactionID é um id novo a cada resgate (32 letras hexadecimais). O custo, o título e a descrição
+               // (prompt) vão iguais aos do bônus no canal: a Twitch confere e, se não baterem, recusa (PROPERTIES_MISMATCH).
                "  const id = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');" +
                "  const r = await gql('mutation($i:RedeemCommunityPointsCustomRewardInput!){redeemCommunityPointsCustomReward(input:$i){redemption{id} error{code}}}'," +
-               "   { i: { channelID: user.id, cost: reward.cost, prompt: null, rewardID: reward.id, title: reward.title, transactionID: id } });" +
+               "   { i: { channelID: user.id, cost: reward.cost, prompt: reward.prompt ?? null, rewardID: reward.id, title: reward.title, transactionID: id } });" +
                "  const p = r?.data?.redeemCommunityPointsCustomReward;" +
                "  if (p && !p.error && !r.errors) return { ...out, redeemed: true };" +
                "  return { ...out, refused: fail(r, p) };" +
