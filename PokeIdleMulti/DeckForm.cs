@@ -51,6 +51,7 @@ internal sealed class DeckForm : Form
     private bool _twitchPointsBusy;
     private readonly RedeemLog _redeemLog;
     private RedeemLogWindow? _redeemLogWindow;
+    private BulkRedeemDialog? _bulkWindow;
     private DateTime _kickRedeemAt;
     private bool _kickRedeeming;
     private readonly Dictionary<(int Pane, string Extension), PopupWindow> _extensionWindows = new();
@@ -237,7 +238,8 @@ internal sealed class DeckForm : Form
         _extensionsButton.ToolTipText = "Instalar e gerenciar as extensões de cada conta";
         _extensionsButton.Click += (_, _) => OpenExtensions();
         _livesButton.ToolTipText = "Lives da Twitch e da Kick tocando em segundo plano, juntando os pontos dos canais (o bônus das lives no jogo)";
-        _livesButton.DropDownOpening += (_, _) => FillLivesMenu();
+        // Com o Shift apertado aparece também o resgate em lote, escondido.
+        _livesButton.DropDownOpening += (_, _) => FillLivesMenu((ModifierKeys & Keys.Shift) == Keys.Shift);
         _livesButton.DropDownItems.Add("…");
         _kickButton.Alignment = ToolStripItemAlignment.Right;
         _kickButton.ToolTipText = "Abre os chats da Kick da conta, para resgatar os pontos do canal (300 pontos = 1 h de +15% de XP)";
@@ -369,9 +371,16 @@ internal sealed class DeckForm : Form
     private readonly Dictionary<string, int> _fakePoints = new();
     private readonly List<string> _fakeRedeems = new();
 
+    // Quem está logado na Kick de mentira: no canal com o mesmo nome é o dono (pontos infinitos).
+    private string _fakeKickMe = "fulano_kick";
+
+    // O id de cada usuário na Kick de mentira.
+    private static int FakeKickId(string name) => name.Sum(c => (int)c);
+
     /// <summary>
     /// A Kick do autoteste (kick.test): as páginas da pasta do site de teste (o player é o kick.html; sem o arquivo,
-    /// fica sem resposta, como sem internet) e a API, com o saldo, os bônus do canal e o resgate.
+    /// fica sem resposta, como sem internet) e a API, com quem está logado, o canal (e o usuário dele), o saldo, os
+    /// bônus do canal e o resgate. O /me do canal ela não tem (404): o dono do canal sai pelo id do usuário.
     /// </summary>
     private void FakeKick(CoreWebView2WebResourceRequestedEventArgs e)
     {
@@ -385,11 +394,33 @@ internal sealed class DeckForm : Form
                 e.Response = _env.CreateWebResourceResponse(new MemoryStream(File.ReadAllBytes(file)), 200, "OK", "Content-Type: text/html");
             return;
         }
-        // api/v2/channels/{canal}/points, …/rewards e …/rewards/{id}/redeem
+        // api/v1/user (quem está logado), api/v2/channels/{canal}, …/me, …/points, …/rewards e …/rewards/{id}/redeem
         var path = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (path.Length < 5 || path[2] != "channels")
+        bool logged = e.Request.Headers.Contains("Authorization");
+        void Reply(int code, string body) => e.Response = _env.CreateWebResourceResponse(
+            new MemoryStream(System.Text.Encoding.UTF8.GetBytes(body)), code, code == 200 ? "OK" : "Error", "Content-Type: application/json");
+        if (path is [_, "v1", "user"])
+        {
+            Reply(logged ? 200 : 401, logged ? JsonSerializer.Serialize(new { id = FakeKickId(_fakeKickMe), username = _fakeKickMe }) : "{\"message\":\"Unauthenticated.\"}");
+            return;
+        }
+        if (path.Length < 4 || path[2] != "channels")
             return;
         string channel = path[3];
+        bool owner = channel == _fakeKickMe;
+        if (path.Length == 4)
+        {
+            Reply(200, JsonSerializer.Serialize(new
+            {
+                id = 1000 + FakeKickId(channel), user_id = FakeKickId(channel), slug = channel, user = new { id = FakeKickId(channel), username = channel },
+            }));
+            return;
+        }
+        if (path[4] == "me")
+        {
+            Reply(404, "{\"message\":\"Not Found\"}");
+            return;
+        }
         // Os 3 do PokeIdle e um "XP" de outro tipo, que não é o do jogo.
         var rewards = new[]
         {
@@ -416,12 +447,15 @@ internal sealed class DeckForm : Form
             string body = e.Request.Content is null ? "" : new StreamReader(e.Request.Content).ReadToEnd();
             string auth = e.Request.Headers.Contains("Authorization") ? e.Request.Headers.GetHeader("Authorization") : "sem login";
             _fakeRedeems.Add($"{channel} {path[5]} {auth} {body}");
+            // O dono do canal (pontos infinitos) resgata sem gastar.
             int cost = rewards.First(r => r.Id == path[5]).Cost;
-            if (_fakePoints.GetValueOrDefault(channel) >= cost)
+            if (owner)
+                status = 200;
+            else if (_fakePoints.GetValueOrDefault(channel) >= cost)
                 _fakePoints[channel] -= cost;
             else
                 status = 400;
-            json = "{\"message\":\"OK\"}";
+            json = status == 200 ? "{\"message\":\"OK\"}" : "{\"message\":\"Not enough points\"}";
         }
         else
         {
@@ -435,6 +469,12 @@ internal sealed class DeckForm : Form
     private readonly Dictionary<string, int> _fakeTwitchPoints = new();
     private readonly HashSet<string> _fakeTwitchClaims = new();
     private readonly List<string> _fakeTwitch = new();
+
+    // Roda depois de cada resgate que passou (o autoteste gasta os pontos por fora, ou cancela, no meio do lote).
+    private Action<string>? _fakeTwitchAfterRedeem;
+
+    // Quem está logado na Twitch de mentira: no canal com o mesmo nome é o dono (pontos infinitos; o saldo nem vem).
+    private string _fakeTwitchMe = "fulano_twitch";
 
     /// <summary>
     /// A Twitch do autoteste (twitch.test): as páginas da pasta do site de teste (o player é o twitch.html), a API
@@ -502,9 +542,15 @@ internal sealed class DeckForm : Form
                 string? prompt = input.TryGetProperty("prompt", out var sent) && sent.ValueKind == JsonValueKind.String ? sent.GetString() : null;
                 bool matches = reward is not null && reward.cost == cost && reward.title == input.GetProperty("title").GetString()
                                && reward.prompt == (prompt ?? "");
-                bool enough = _fakeTwitchPoints.GetValueOrDefault(channel) >= cost;
+                // O dono do canal (pontos infinitos) resgata sem gastar.
+                bool owner = channel == _fakeTwitchMe;
+                bool enough = owner || _fakeTwitchPoints.GetValueOrDefault(channel) >= cost;
                 if (matches && enough)
-                    _fakeTwitchPoints[channel] -= cost;
+                {
+                    if (!owner)
+                        _fakeTwitchPoints[channel] -= cost;
+                    _fakeTwitchAfterRedeem?.Invoke(channel);
+                }
                 json = "{\"data\":{\"redeemCommunityPointsCustomReward\":" +
                        (!matches ? "{\"redemption\":null,\"error\":{\"code\":\"PROPERTIES_MISMATCH\"}}"
                            : enough ? "{\"redemption\":{\"id\":\"r1\"},\"error\":null}"
@@ -514,23 +560,22 @@ internal sealed class DeckForm : Form
             {
                 string channel = variables.GetProperty("login").GetString() ?? "";
                 _fakeTwitch.Add($"saldo {channel} {Header("Authorization")} {Header("X-Device-Id")}");
+                object? communityPoints = channel == _fakeTwitchMe ? null : new
+                {
+                    balance = _fakeTwitchPoints.GetValueOrDefault(channel),
+                    availableClaim = _fakeTwitchClaims.Contains(channel) ? new { id = "bau-" + channel } : null,
+                };
                 json = JsonSerializer.Serialize(new
                 {
                     data = new
                     {
+                        currentUser = new { id = "id-" + _fakeTwitchMe, login = _fakeTwitchMe },
                         user = new
                         {
                             id = "id-" + channel,
                             channel = new
                             {
-                                self = new
-                                {
-                                    communityPoints = new
-                                    {
-                                        balance = _fakeTwitchPoints.GetValueOrDefault(channel),
-                                        availableClaim = _fakeTwitchClaims.Contains(channel) ? new { id = "bau-" + channel } : null,
-                                    },
-                                },
+                                self = new { communityPoints },
                                 communityPointsSettings = new
                                 {
                                     customRewards = rewards.Select(r => new
@@ -1865,7 +1910,8 @@ internal sealed class DeckForm : Form
         UpdateBar();
     }
 
-    private void FillLivesMenu()
+    /// <summary>O menu Lives; <paramref name="hidden"/> (Shift apertado ao abrir) põe também o resgate em lote.</summary>
+    private void FillLivesMenu(bool hidden)
     {
         var items = _livesButton.DropDownItems;
         items.Clear();
@@ -1884,7 +1930,32 @@ internal sealed class DeckForm : Form
             .Enabled = _lives.Any(l => l is not null);
         int today = _redeemLog.Lines.Count(l => l.StartsWith(DateTime.Now.ToString("dd/MM/yy")));
         items.Add($"Registro dos resgates… ({today} hoje)", null, (_, _) => ShowRedeemLog());
+        if (hidden)
+            items.Add("Resgate em lote… (pontos da Twitch e da Kick)", null, (_, _) => ShowBulkRedeem());
         items.Add("Config…", null, async (_, _) => await EditChannelsAsync());
+    }
+
+    /// <summary>
+    /// O resgate em lote (uma janela só; clicar de novo traz ela para a frente). Vem escolhida a 1ª conta com lives, e
+    /// os pedidos rodam num player do site (Twitch ou Kick) escondido no perfil da conta (no autoteste, o de mentira).
+    /// </summary>
+    private void ShowBulkRedeem()
+    {
+        if (_env is null)
+            return;
+        if (_bulkWindow is { IsDisposed: false })
+        {
+            _bulkWindow.Activate();
+            return;
+        }
+        int account = _config.LivesAccounts.Where(a => a >= 1 && a <= Accounts).Select(a => a - 1).DefaultIfEmpty(0).First();
+        var accounts = Enumerable.Range(0, Accounts)
+            .Select(i => (_config.AccountNames[i] + (_panes[i].Off ? " (desligada)" : ""), _panes[i].ProfileName)).ToList();
+        _bulkWindow = new BulkRedeemDialog(_env, accounts, account,
+            site => site == LiveSite.Kick ? KickApi : TwitchApi,
+            (site, channel) => site == LiveSite.Kick ? KickUrl(channel) : TwitchUrl(channel), SelfTestSetup,
+            (i, site, text) => _redeemLog.Add(_config.AccountNames[i], site, text));
+        _bulkWindow.Show(this);
     }
 
     /// <summary>A janela do registro dos resgates (uma só; clicar de novo traz ela para a frente).</summary>
@@ -2775,6 +2846,177 @@ internal sealed class DeckForm : Form
                 && File.ReadAllLines(_redeemLog.FilePath).SequenceEqual(logLines)
                 && logLines.Count > 0 && shownLog.StartsWith(logLines[^1]),
                 string.Join(" | ", logLines));
+
+            // Resgate em lote: o item só aparece no menu Lives com o Shift. Com a conta 1 (o login dela de novo) no
+            // biscoitao, 2 XP + 1 Captura com 1500 pontos são 3 resgates (XP, Captura, XP), cada um com a descrição do
+            // bônus (senão a Twitch de mentira recusa) e um transactionID novo; saem 1100 e o saldo do fim é lido de novo.
+            twitchCookies.AddOrUpdateCookie(twitchCookies.CreateCookie("auth-token", "tok123", ".twitch.tv", "/"));
+            twitchCookies.AddOrUpdateCookie(twitchCookies.CreateCookie("unique_id", "dev123", ".twitch.tv", "/"));
+            _fakeTwitchPoints["biscoitao"] = 1500;
+            bool HasBulk() => _livesButton.DropDownItems.Cast<ToolStripItem>().Any(x => x.Text?.StartsWith("Resgate em lote") == true);
+            FillLivesMenu(false);
+            bool bulkHidden = !HasBulk();
+            FillLivesMenu(true);
+            bool bulkShown = HasBulk();
+            _livesButton.DropDownItems.Cast<ToolStripItem>().FirstOrDefault(x => x.Text?.StartsWith("Resgate em lote") == true)?.PerformClick();
+            FillLivesMenu(false);
+            var bulk = _bulkWindow;
+            string bulkBefore = "", bulkEnd = "";
+            bool bulkRead = false, bulkReady = false;
+            var bulkRedeems = new List<string>();
+            if (bulk is not null)
+            {
+                bulk.PauseMs = (100, 200);
+                bulk.Account = 0;
+                bulk.Channel = "biscoitao";
+                bulk.SetCounts(2, 1, 0);
+                bulkRead = await bulk.CheckAsync();
+                bulkBefore = bulk.StatusText;
+                bulkReady = bulk.CanRedeem;
+                _fakeTwitch.Clear();
+                await bulk.RunAsync();
+                bulkRedeems = _fakeTwitch.Where(r => r.StartsWith("resgate")).ToList();
+                bulkEnd = string.Join(" / ", bulk.ProgressLines);            }
+            bool bulkOrder = bulkRedeems.Count == 3
+                && System.Text.RegularExpressions.Regex.IsMatch(bulkRedeems[0], "^resgate biscoitao xp 300 OAuth tok123 [0-9a-f]{32}$")
+                && System.Text.RegularExpressions.Regex.IsMatch(bulkRedeems[1], "^resgate biscoitao cap 500 OAuth tok123 [0-9a-f]{32}$")
+                && System.Text.RegularExpressions.Regex.IsMatch(bulkRedeems[2], "^resgate biscoitao xp 300 OAuth tok123 [0-9a-f]{32}$")
+                && bulkRedeems.Select(r => r.Split(' ')[^1]).Distinct().Count() == 3;
+            Check("resgate em lote: só aparece no Lives com o Shift; 2 XP + 1 Captura são 3 resgates com a descrição do bônus, e lê o saldo no fim",
+                bulkHidden && bulkShown && bulk is not null && bulkRead && bulkReady && bulkOrder
+                && bulkBefore.Contains("fulano_twitch tem 1.500 pontos em biscoitao") && bulkBefore.Contains("Total: 1.100 pontos (sobram 400)")
+                && bulk.Done == 3 && bulk.Stop is null && _fakeTwitchPoints["biscoitao"] == 400 && _fakeTwitch[^1].StartsWith("saldo biscoitao")
+                && bulkEnd.EndsWith("Fim: 3 de 3. Saldo agora: 400."),
+                $"menu={bulkHidden}/{bulkShown} leu={bulkRead} pronto={bulkReady} | {bulkBefore.Replace(Environment.NewLine, " ")} | " +
+                $"pedidos={string.Join(" | ", _fakeTwitch)} | {bulkEnd} saldo={_fakeTwitchPoints["biscoitao"]}");
+
+            // Sem saldo para o lote, não começa (nenhum resgate). Com saldo, mas os pontos gastos por fora depois do 1º
+            // (outro resgate no meio), para no NOT_ENOUGH_POINTS da Twitch e mostra o saldo do fim; o Cancelar para depois
+            // do resgate da vez. Tudo no registro dos resgates.
+            string bulkShort = "", bulkStopped = "", bulkCancelled = "";
+            bool bulkRefused = false, bulkNotEnough = false, bulkCancel = false;
+            if (bulk is not null)
+            {
+                bulk.SetCounts(2, 0, 0);
+                await bulk.CheckAsync();
+                bulkShort = bulk.StatusText;
+                _fakeTwitch.Clear();
+                await bulk.RunAsync();
+                bulkRefused = !bulk.CanRedeem && bulkShort.Contains("Saldo insuficiente: precisa de 600 pontos e a conta tem 400.")
+                              && bulk.Done == 0 && bulk.Stop?.StartsWith("Saldo insuficiente") == true && !_fakeTwitch.Any(r => r.StartsWith("resgate"));
+
+                _fakeTwitchPoints["biscoitao"] = 1000;
+                bulk.SetCounts(3, 0, 0);
+                _fakeTwitchAfterRedeem = channel => _fakeTwitchPoints[channel] = 100;
+                _fakeTwitch.Clear();
+                await bulk.RunAsync();
+                bulkStopped = string.Join(" / ", bulk.ProgressLines);
+                bulkNotEnough = bulk.Done == 1 && bulk.Stop == "erro NOT_ENOUGH_POINTS" && _fakeTwitch.Count(r => r.StartsWith("resgate")) == 2
+                                && bulkStopped.Contains("2/3 +15% XP: recusado, erro NOT_ENOUGH_POINTS. Parei aqui.")
+                                && bulkStopped.EndsWith("Fim: 1 de 3 (erro NOT_ENOUGH_POINTS). Saldo agora: 100.");
+
+                _fakeTwitchPoints["biscoitao"] = 1000;
+                _fakeTwitchAfterRedeem = _ => bulk.Cancel();
+                _fakeTwitch.Clear();
+                await bulk.RunAsync();
+                _fakeTwitchAfterRedeem = null;
+                bulkCancelled = string.Join(" / ", bulk.ProgressLines);
+                bulkCancel = bulk.Done == 1 && bulk.Stop == "cancelado" && _fakeTwitch.Count(r => r.StartsWith("resgate")) == 1
+                             && _fakeTwitchPoints["biscoitao"] == 700 && bulkCancelled.EndsWith("Fim: 1 de 3 (cancelado). Saldo agora: 700.");
+            }
+            var bulkLog = _redeemLog.Lines.Where(l => l.Contains($"  {account1} · Twitch · biscoitao: ")).ToList();
+            bool BulkLogged(string text) => bulkLog.Any(l => l.EndsWith($"  {account1} · Twitch · biscoitao: {text}"));
+            Check("resgate em lote: sem saldo não começa; para no 1º erro da Twitch (NOT_ENOUGH_POINTS) e no Cancelar; tudo no registro",
+                bulkRefused && bulkNotEnough && bulkCancel
+                && BulkLogged("resgate em lote de 2 XP + 1 Captura (1100 pontos; saldo 1500)")
+                && BulkLogged("resgatou Bônus +15% XP PokeIdle (em lote, 1 de 3; 300 pontos; sobraram 1200)")
+                && BulkLogged("resgatou Bônus de +15% Capture Boost (em lote, 2 de 3; 500 pontos; sobraram 700)")
+                && BulkLogged("resgate em lote terminou: 3 de 3; saldo 400")
+                && BulkLogged("o resgate em lote de Bônus +15% XP PokeIdle foi recusado (erro NOT_ENOUGH_POINTS; saldo 700); parei no 2 de 3")
+                && BulkLogged("resgate em lote terminou: 1 de 3 (erro NOT_ENOUGH_POINTS); saldo 100")
+                && BulkLogged("resgate em lote terminou: 1 de 3 (cancelado); saldo 700"),
+                $"{bulkShort.Replace(Environment.NewLine, " ")} | {bulkStopped} | {bulkCancelled} | {string.Join(" | ", bulkLog)}");
+
+            // Resgate em lote na Kick, com o login da conta 1 (o session_token vai como Bearer): 1 XP + 1 Captura com 1000
+            // pontos são 2 resgates (XP, Captura), cada um com um transaction_id novo; sobram 200, lidos de novo no fim.
+            string kickBulkBefore = "", kickEnd = "";
+            bool kickRead = false, kickReady = false;
+            int kickFrom = _fakeRedeems.Count;
+            if (bulk is not null)
+            {
+                _fakePoints["biscoitao"] = 1000;
+                bulk.SetCounts(1, 1, 0);
+                bulk.Platform = LiveSite.Kick;
+                kickRead = await bulk.CheckAsync();
+                kickBulkBefore = bulk.StatusText;
+                kickReady = bulk.CanRedeem;
+                await bulk.RunAsync();
+                kickEnd = string.Join(" / ", bulk.ProgressLines);
+            }
+            var kickBulk = _fakeRedeems.Skip(kickFrom).ToList();
+            const string kickBody = " \\{\"transaction_id\":\"[0-9A-HJKMNP-TV-Z]{26}\",\"message\":\"\"\\}$";
+            bool kickOrder = kickBulk.Count == 2
+                && System.Text.RegularExpressions.Regex.IsMatch(kickBulk[0], "^biscoitao xp Bearer 123\\|abc" + kickBody)
+                && System.Text.RegularExpressions.Regex.IsMatch(kickBulk[1], "^biscoitao cap Bearer 123\\|abc" + kickBody);
+            Check("resgate em lote na Kick: com o login da conta, 1 XP + 1 Captura são 2 resgates, e lê o saldo no fim",
+                kickRead && kickReady && kickOrder && kickBulkBefore.Contains("fulano_kick tem 1.000 pontos em biscoitao na Kick")
+                && kickBulkBefore.Contains("Total: 800 pontos (sobram 200)") && bulk?.Done == 2 && bulk.Stop is null
+                && _fakePoints["biscoitao"] == 200 && kickEnd.EndsWith("Fim: 2 de 2. Saldo agora: 200."),
+                $"leu={kickRead} pronto={kickReady} | {kickBulkBefore.Replace(Environment.NewLine, " ")} | pedidos={string.Join(" | ", kickBulk)} | " +
+                $"{kickEnd} saldo={_fakePoints["biscoitao"]}");
+
+            // O dono do canal tem pontos infinitos: na Twitch o saldo nem vem, na Kick vem 0. O lote reconhece o dono (a
+            // conta logada é o usuário do canal; a Kick de mentira nem tem o /me do canal), mostra ∞, não exige saldo e
+            // resgata 2 Shiny (2000 pontos) nos dois sites, sem gastar nada. Tudo no registro.
+            string ownerTwitch = "", ownerKick = "", ownerTwitchEnd = "", ownerKickEnd = "";
+            bool ownerTwitchReady = false, ownerKickReady = false;
+            int ownerTwitchDone = 0, ownerKickDone = 0, ownerKickFrom = _fakeRedeems.Count;
+            if (bulk is not null)
+            {
+                _fakeTwitchMe = _fakeKickMe = "biscoitao";
+                _fakeTwitchPoints["biscoitao"] = 0;
+                _fakePoints["biscoitao"] = 0;
+                bulk.SetCounts(0, 0, 2);
+                bulk.Platform = LiveSite.Twitch;
+                await bulk.CheckAsync();
+                ownerTwitch = bulk.StatusText;
+                ownerTwitchReady = bulk.CanRedeem;
+                _fakeTwitch.Clear();
+                await bulk.RunAsync();
+                ownerTwitchDone = bulk.Done;
+                ownerTwitchEnd = string.Join(" / ", bulk.ProgressLines);
+                bulk.Platform = LiveSite.Kick;
+                await bulk.CheckAsync();
+                ownerKick = bulk.StatusText;
+                ownerKickReady = bulk.CanRedeem;
+                await bulk.RunAsync();
+                ownerKickDone = bulk.Done;
+                ownerKickEnd = string.Join(" / ", bulk.ProgressLines);
+                _fakeTwitchMe = "fulano_twitch";
+                _fakeKickMe = "fulano_kick";
+                bulk.Close();
+                Activate();
+            }
+            int ownerTwitchRedeems = _fakeTwitch.Count(r => r.StartsWith("resgate biscoitao lure 1000 OAuth tok123 "));
+            int ownerKickRedeems = _fakeRedeems.Skip(ownerKickFrom).Count(r => r.StartsWith("biscoitao lure Bearer 123|abc "));
+            var ownerLog = _redeemLog.Lines.Where(l => l.Contains($"  {account1} · ") && l.Contains(" · biscoitao: ")).ToList();
+            bool OwnerLogged(LiveSite site, string text) => ownerLog.Any(l => l.EndsWith($"  {account1} · {site} · biscoitao: {text}"));
+            bool ownerLogs = new[] { LiveSite.Twitch, LiveSite.Kick }.All(site =>
+                OwnerLogged(site, "resgate em lote de 2 Shiny (2000 pontos; dono do canal, pontos infinitos)")
+                && OwnerLogged(site, "resgatou Bônus de +15% Secret Lure (em lote, 2 de 2; 1000 pontos; dono do canal)")
+                && OwnerLogged(site, "resgate em lote terminou: 2 de 2; saldo ∞ (dono do canal)"))
+                && OwnerLogged(LiveSite.Kick, "resgatou Bônus de +15% Capture Boost (em lote, 2 de 2; 500 pontos; sobraram 200)");
+            Check("resgate em lote: o dono do canal (pontos infinitos) resgata sem saldo, na Twitch e na Kick; tudo no registro",
+                ownerTwitchReady && ownerKickReady
+                && ownerTwitch.Contains("biscoitao é o dono do canal biscoitao na Twitch: pontos infinitos (∞).")
+                && ownerTwitch.Contains("Total: 2.000 pontos (dono do canal: não precisa de saldo)")
+                && ownerKick.Contains("biscoitao é o dono do canal biscoitao na Kick: pontos infinitos (∞).")
+                && ownerTwitchDone == 2 && ownerKickDone == 2 && ownerTwitchRedeems == 2 && ownerKickRedeems == 2
+                && ownerTwitchEnd.EndsWith("Fim: 2 de 2. Saldo agora: ∞ (dono do canal).")
+                && ownerKickEnd.EndsWith("Fim: 2 de 2. Saldo agora: ∞ (dono do canal).")
+                && _fakeTwitchPoints["biscoitao"] == 0 && _fakePoints["biscoitao"] == 0 && ownerLogs && bulk?.IsDisposed == true,
+                $"{ownerTwitch.Replace(Environment.NewLine, " ")} | {ownerTwitchEnd} | {ownerKick.Replace(Environment.NewLine, " ")} | {ownerKickEnd} | " +
+                $"twitch={ownerTwitchRedeems} kick={ownerKickRedeems} | {string.Join(" | ", ownerLog.TakeLast(8))}");
 
             // deck.json: o de antes (um resgate para todas as contas) vira o mesmo bônus em cada conta; um número fora
             // da lista vira o XP; de fábrica nenhuma conta resgata.

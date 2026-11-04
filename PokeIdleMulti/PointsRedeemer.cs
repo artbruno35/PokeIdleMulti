@@ -24,7 +24,33 @@ internal sealed class PointsRedeemer
     private static readonly TimeSpan RefundWindow = TimeSpan.FromMinutes(30);
 
     // O Client-Id do próprio site da Twitch, o mesmo do player.
-    private const string TwitchClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+    internal const string TwitchClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+
+    /// <summary>
+    /// O começo dos scripts da Twitch (dentro de "async a => {"): gql(query, variables) chama a API do site com o login
+    /// da conta (a.token, a.device, a.clientId, a.api); quando a Twitch desafia o pedido com a checagem anti-robô, pede o
+    /// token dela de dentro da página e manda de novo. fail(resposta, resultado) diz o que deu errado.
+    /// </summary>
+    internal const string TwitchGql =
+        " const base = { 'Client-Id': a.clientId, Authorization: 'OAuth ' + a.token, 'Content-Type': 'text/plain;charset=UTF-8'," +
+        "  ...(a.device ? { 'X-Device-Id': a.device } : {}) };" +
+        " let integrity = null;" +
+        " const gql = async (query, variables) => {" +
+        "  for (let i = 0; i < 2; i++) {" +
+        "   const r = await fetch(a.api + '/gql', { method: 'POST', cache: 'no-cache'," +
+        "    headers: integrity ? { ...base, 'Client-Integrity': integrity } : base, body: JSON.stringify({ query, variables }) });" +
+        "   if (!r.ok) return { failed: 'erro ' + r.status };" +
+        "   const j = await r.json();" +
+        "   const challenged = !!j?.extensions?.challenge || (j?.errors || []).some(e => e?.extensions?.code === 'IntegrityCheckFailed');" +
+        "   if (!challenged) return j;" +
+        "   if (integrity) return { failed: 'checagem anti-robô da Twitch' };" +
+        "   const t = await fetch(a.api + '/integrity', { method: 'POST', cache: 'no-cache', headers: base });" +
+        "   const tj = t.ok ? await t.json() : null;" +
+        "   if (!tj?.token) return { failed: 'checagem anti-robô da Twitch (' + t.status + ')' };" +
+        "   integrity = tj.token;" +
+        "  }" +
+        " };" +
+        " const fail = (j, x) => j?.failed || x?.error?.code || j?.errors?.[0]?.message || 'sem resposta';";
 
     private readonly Dictionary<string, Channel> _channels = new();
 
@@ -83,7 +109,7 @@ internal sealed class PointsRedeemer
     }
 
     // O nome do bônus em cada canal: "Bônus +15% XP PokeIdle", "Bônus de +15% Capture Boost", "… Secret Lure".
-    private static string Word(KickReward reward) => reward switch
+    internal static string Word(KickReward reward) => reward switch
     {
         KickReward.Capture => "captur",
         KickReward.Lure => "lure|shiny",
@@ -142,26 +168,7 @@ internal sealed class PointsRedeemer
         {
             api, channel, token, device, clientId = TwitchClientId, word = reward is KickReward r ? Word(r) : null, spend, refund, claim,
         });
-        return "(async a => {" +
-               " const base = { 'Client-Id': a.clientId, Authorization: 'OAuth ' + a.token, 'Content-Type': 'text/plain;charset=UTF-8'," +
-               "  ...(a.device ? { 'X-Device-Id': a.device } : {}) };" +
-               " let integrity = null;" +
-               " const gql = async (query, variables) => {" +
-               "  for (let i = 0; i < 2; i++) {" +
-               "   const r = await fetch(a.api + '/gql', { method: 'POST', cache: 'no-cache'," +
-               "    headers: integrity ? { ...base, 'Client-Integrity': integrity } : base, body: JSON.stringify({ query, variables }) });" +
-               "   if (!r.ok) return { failed: 'erro ' + r.status };" +
-               "   const j = await r.json();" +
-               "   const challenged = !!j?.extensions?.challenge || (j?.errors || []).some(e => e?.extensions?.code === 'IntegrityCheckFailed');" +
-               "   if (!challenged) return j;" +
-               "   if (integrity) return { failed: 'checagem anti-robô da Twitch' };" +
-               "   const t = await fetch(a.api + '/integrity', { method: 'POST', cache: 'no-cache', headers: base });" +
-               "   const tj = t.ok ? await t.json() : null;" +
-               "   if (!tj?.token) return { failed: 'checagem anti-robô da Twitch (' + t.status + ')' };" +
-               "   integrity = tj.token;" +
-               "  }" +
-               " };" +
-               " const fail = (j, x) => j?.failed || x?.error?.code || j?.errors?.[0]?.message || 'sem resposta';" +
+        return "(async a => {" + TwitchGql +
                " try {" +
                "  const j = await gql('query($login:String!){user(login:$login){id channel{self{communityPoints{balance availableClaim{id}}}' +" +
                "   ' communityPointsSettings{customRewards{id title prompt cost isEnabled isPaused isInStock cooldownExpiresAt}}}}}', { login: a.channel });" +
