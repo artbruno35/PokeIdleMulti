@@ -35,7 +35,7 @@ configurações continuam, porque não ficam no exe.
    extensões, lives e voto), e ela não gasta nada até ligar de novo. Uma conta parada na tela de login gasta
    memória à toa: entre nela ou desligue.
 4. **Lives (opcional).** Em **Lives**, marque a conta vinculada à sua Twitch/Kick (normalmente a main). Em
-   **Lives → Mostrar as lives**, entre na Twitch e na Kick uma vez. Em **Lives → Canais…** ficam os canais e
+   **Lives → Mostrar as lives**, entre na Twitch e na Kick uma vez. Em **Lives → Config…** ficam os canais e
    quantas lives da Kick abrir.
 5. **Recompra (opcional).** O 🛒 no cabeçalho de cada conta abre a recompra dela. Confira os valores antes de
    ligar.
@@ -53,6 +53,8 @@ configurações continuam, porque não ficam no exe.
   está rodando e os avisos (por exemplo, "na tela de login"). Com as contas em colunas, o cabeçalho se aperta
   para nenhum botão sumir.
 - **Zoom:** **− Zoom 100% +** na barra de cima muda todas as contas juntas (na setinha, de 50% a 150%).
+  Ampliar uma conta põe o zoom em 100%; voltar para a grade ou as colunas devolve o zoom de antes (por
+  exemplo, 50% para as 4 contas caberem na tela).
 - **⇄ Eco:** ligado, um clique numa conta se repete nas outras, no mesmo botão (pelo caminho e pelo texto
   dele, não pela posição na tela). Se a outra conta está numa tela sem esse botão, nada é clicado nela e o
   cabeçalho avisa. O que você digita nunca é repetido, para o chat do jogo não receber a mesma mensagem 4 vezes.
@@ -88,18 +90,39 @@ A cada segundo o deck confere quanto a conta tem e compra no **Market do NPC** o
 
 ### Lives para o bônus de XP
 
-- **Twitch:** de fábrica, só a **presença nos chats** (uma conexão com o chat de cada canal, sem página
-  aberta), que é o que o jogo confere e quase não gasta nada. Usa o login da Twitch da janela de lives da
-  conta e reconecta sozinha quando a internet cai ou o PC dorme. Em Lives → Canais… dá para trocar por abrir a
-  página do chat ou a live inteira.
-- **Kick:** abre as primeiras lives da lista que estiverem no ar, até o número escolhido em Lives → Canais…
-  (2 de fábrica, as que a Kick conta para os pontos). Live offline não fica aberta. O vídeo vem na menor
-  qualidade, sem propaganda nem rastreadores, numa janela fora da tela com o chat escondido (quase metade da
-  CPU a menos). A cada 30 s o deck confere se cada live está tocando e recarrega a que travou ou caiu.
-- **Botão kick** de cada conta: escolher qual live da Kick fechar nela (ou todas), e abrir de novo.
-- **💰 Pontos da Kick:** mostra as lives da conta lado a lado, só com o rodapé do chat: o botão dos pontos e o
-  espaço do popup de escolher o bônus. A altura da janela muda arrastando a borda, e o deck guarda. "Próxima
-  conta ▶" passa para a conta seguinte; "Página inteira" mostra a live toda.
+- **Twitch:** desde 04/11/2026 o bônus da Twitch sai dos pontos do canal (300 XP, 500 Captura, 1000 Shiny),
+  que só vêm com a live tocando; estar no chat não conta mais. O deck abre o player das primeiras lives da
+  lista que estiverem no ar, até o número escolhido em Lives → Config… (2 de fábrica), e confere a cada 2 min
+  quem está no ar. Cada live toca só o player da Twitch (o "player em janela" do site), com os mesmos cortes da
+  Kick. Sem o login da Twitch na conta, abre só a página de entrar; os players vêm depois que a conta entra.
+- **Baú de bônus da Twitch** (ligado de fábrica): a cada 2 min o deck pega o baú (+50 a cada ~15 min) de cada
+  live da Twitch aberta, o que quase triplica os pontos. Pegar o baú passa pela checagem anti-robô da Twitch,
+  que o deck faz de dentro do player; se ela barrar, o menu Lives avisa ao lado da live.
+- **Kick:** abre as primeiras lives da lista que estiverem no ar, até o número escolhido em Lives → Config…
+  (2 de fábrica: testado, a Kick só dá pontos em 2 lives ao mesmo tempo por conta). Live offline não fica
+  aberta. Cada live toca só o player da Kick (player.kick.com), que rende os pontos igual à página do canal e
+  gasta uns 40% menos; o vídeo vem na menor qualidade, sem propaganda nem rastreadores, numa janela fora da
+  tela. A cada 30 s o deck confere se cada live está tocando e recarrega a que travou ou caiu.
+- **Botão lives** de cada conta (no cabeçalho): escolher qual live da Kick ou da Twitch fechar nela (ou todas de
+  um site), e abrir de novo. A vaga de uma live fechada não abre outra sozinha. O botão fica marcado enquanto
+  houver live fechada.
+- **💰 Pontos da Kick:** abre a página de cada canal da conta, lado a lado, só com o rodapé do chat: o botão
+  dos pontos e o espaço do popup de escolher o bônus. Essas páginas só existem enquanto o 💰 está aberto;
+  fechar devolve a memória, e o player continua rendendo. A altura da janela muda arrastando a borda, e o deck
+  guarda. "Próxima conta ▶" passa para a conta seguinte; "Página inteira" mostra a página do canal toda.
+- **💰 Pontos da Twitch:** o mesmo, com o chat em janela de cada live da Twitch da conta (o botão dos pontos e o
+  baú ficam embaixo, ao lado do campo de mensagem). As mensagens ficam escondidas; "Página inteira" mostra
+  tudo.
+- **Registro dos resgates** (Lives → Registro dos resgates…): cada resgate, cada baú, cada recusa e cada vez que
+  os pontos voltaram, com a hora, a conta, o site e o canal, o mais novo em cima. Fica em
+  `%LOCALAPPDATA%\PokeIdleMulti\resgates.log`, de uma vez para outra.
+- **Resgate automático** (Lives → Config…, uma linha por conta, com uma escolha para a Kick e outra para a
+  Twitch, nenhuma de fábrica): o bônus do PokeIdle que cada conta resgata em cada site (+15% XP por 300 pontos,
+  Captura por 500 ou Shiny por 1000). O deck confere o saldo de cada live aberta nessas contas (Kick a cada
+  5 min, Twitch a cada 2), pelo player e com o login da conta, e resgata 1 bônus naquele canal se der. As horas
+  acumulam no jogo. O saldo e o último resgate aparecem no menu Lives, ao lado de cada live. Resgate recusado:
+  tenta de novo naquele canal em 30 min. Se os pontos voltarem (site não vinculado no jogo), o deck para de
+  resgatar naquela conta e avisa; salvar Lives → Config… de novo volta a resgatar.
 
 ### 🗳 Voto no TopIdle
 
@@ -127,7 +150,7 @@ Quase tudo se configura pelas janelas do deck, e fica salvo sozinho em
 |---|---|
 | Botão direito na conta, na barra de cima | Renomear, recarregar, som, desligar, lives nesta conta |
 | **Lives** | Quais contas abrem lives; mostrar a janela das lives |
-| **Lives → Canais…** | Canais da Twitch e da Kick (em ordem de prioridade), modo da Twitch e quantas lives da Kick abrir por conta |
+| **Lives → Config…** | Canais da Twitch e da Kick (em ordem de prioridade), quantas lives da Twitch e da Kick abrir por conta, o resgate automático dos pontos (qual bônus cada conta resgata em cada site) e o baú da Twitch |
 | **🛒** no cabeçalho | Recompra da conta: pokebola, revives, poções, ouro mínimo |
 | **⚡ ULTRA** (setinha) | ULTRA em todas as contas e o menos animações |
 | **− Zoom +** | Zoom de todas as contas |
@@ -146,9 +169,10 @@ levar o deck para outro PC, copie essa pasta inteira (com o deck fechado) ou ent
 - **Uma conta do jogo em um lugar só.** Abrir a mesma conta no deck e no navegador derruba uma das duas.
 - **Conta parada na tela de login** vai juntando memória (o captcha do login se refaz sozinho). O cabeçalho
   avisa: entre na conta ou desligue no ⏻.
-- **RAM:** cada live da Kick gasta uns 200 MB (o site e o player da Kick, não o vídeo, que fica em 160p). As
-  lives de uma conta dividem um processo, o que tira uns 15%. A barra de baixo mostra quanto o jogo, as lives
-  e o navegador estão usando. Num notebook com 8 GB, abra poucas lives, use o ULTRA e desligue as contas que não usa.
+- **RAM e CPU:** medido em 04/11/2026 (`PokeIdleMulti.exe --consumo`), cada player da Twitch ou da Kick gasta
+  ~9% de um núcleo; a 1ª live de cada site numa conta ~280 MB, e cada uma a mais ~115 MB. As lives de um site
+  numa conta dividem um processo. Com o 💰 aberto, a página de cada canal soma mais uns 200 MB até fechar. A
+  barra de baixo mostra quanto o jogo, as lives e o navegador estão usando. Num notebook com 8 GB, abra poucas lives, use o ULTRA e desligue as contas que não usa.
 - **O bônus das lives** vale para a conta do jogo vinculada à Twitch/Kick logada nas lives daquela conta.
   Marque em Lives só a conta vinculada.
 - **Kick:** os pontos só contam com o vídeo tocando; o deck confere e recarrega, mas acompanhe o ▶ na barra de
@@ -182,7 +206,8 @@ abre no monitor principal. Apague a pasta `selftest` antes de cada rodada.
 | `DeckForm.cs` | A janela, a barra de cima e a de baixo, os layouts, lives, voto e o autoteste |
 | `AccountPane.cs` | Uma conta: o cabeçalho e a página do jogo |
 | `DeckConfig.cs` | O `deck.json` |
-| `LivesWindow.cs`, `TwitchPresence.cs`, `KickLive.cs`, `VideoQuality.cs`, `AdBlock.cs` | As lives da Twitch e da Kick |
+| `LivesWindow.cs`, `TwitchLive.cs`, `KickLive.cs`, `VideoQuality.cs`, `AdBlock.cs` | As lives da Twitch e da Kick |
+| `ConsumptionTest.cs` | O teste de consumo das lives (`PokeIdleMulti.exe --consumo`) |
 | `Restock.cs`, `RestockWindow.cs`, `recompra.js` | A recompra (o script roda na página do jogo) |
 | `Echo.cs` | O eco de cliques |
 | `TopIdle.cs` | O voto no TopIdle |

@@ -5,7 +5,7 @@ namespace PokeIdleMulti;
 
 /// <summary>
 /// Quem está ao vivo na Kick, pela mesma API que o site usa (kick.com/api/v2/channels/{canal}). O deck
-/// abre só as primeiras da lista que estão no ar, até o limite escolhido em Lives → Canais… (2 de fábrica,
+/// abre só as primeiras da lista que estão no ar, até o limite escolhido em Lives → Config… (2 de fábrica,
 /// as que a Kick conta para os pontos); live offline não fica aberta gastando.
 /// </summary>
 internal static class KickLive

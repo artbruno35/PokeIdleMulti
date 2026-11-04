@@ -23,6 +23,15 @@ internal static class Program
             return;
         }
 
+        // Teste de consumo das lives: perfil de teste à parte, roda junto com o deck aberto.
+        if (args.Contains("--consumo"))
+        {
+            using var measuring = new Mutex(true, "PokeIdleDeck-consumo", out bool alone);
+            if (alone)
+                Application.Run(new ConsumptionTest());
+            return;
+        }
+
         bool selfTest = args.Contains("--self-test");
         // Dois decks abertos com as mesmas contas ficam se derrubando ("Account opened elsewhere").
         using var single = new Mutex(true, selfTest ? "PokeIdleDeck-selftest" : "PokeIdleDeck", out bool first);
