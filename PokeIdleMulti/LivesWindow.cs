@@ -5,15 +5,18 @@ using Microsoft.Web.WebView2.WinForms;
 
 namespace PokeIdleMulti;
 
+/// <summary>O site de uma vaga de live na janela das lives.</summary>
+internal enum LiveSite { Twitch, Kick }
+
 /// <summary>
 /// As lives da Twitch e da Kick de uma conta, no mesmo perfil da conta (é onde ficam os logins da
 /// Twitch/Kick). As páginas ficam empilhadas, todas visíveis para o navegador: página escondida (como
-/// a aba de trás de um TabControl) não toca o vídeo, e a Kick só dá pontos com a live tocando. Por isso
+/// a aba de trás de um TabControl) não toca o vídeo, e as duas só dão pontos com a live tocando. Por isso
 /// a janela fica aberta fora da tela; "Mostrar" traz ela para perto do deck e fechar devolve para fora.
-/// Cada live da Kick toca só o player (player.kick.com): ele avisa a Kick que a conta está assistindo, que
-/// é o que rende os pontos, e gasta uns 40% menos que a página do canal. O chat e o botão dos pontos ficam na
-/// página do canal, que abre por cima do player só enquanto a janela está na tela, em colunas lado a lado, e
-/// fecha quando ela sai.
+/// Cada live toca só o player (player.twitch.tv e player.kick.com): ele avisa o site que a conta está
+/// assistindo, que é o que rende os pontos, e gasta bem menos que a página do canal. Na Kick, o chat e o botão
+/// dos pontos ficam na página do canal, que abre por cima do player só enquanto a janela está na tela, em
+/// colunas lado a lado, e fecha quando ela sai.
 /// </summary>
 internal sealed class LivesWindow : Form
 {
@@ -28,11 +31,11 @@ internal sealed class LivesWindow : Form
         ToolTipText = "Mostra a página toda da live (com o vídeo), se algo do chat ficar cortado",
     };
     private readonly ToolStripButton _next = new("Próxima conta ▶") { Alignment = ToolStripItemAlignment.Right, Visible = false };
-    private int _kickStart;
     private int _selected;
     private int _order;
     private int _fitHeight;
     private bool _revealed;
+    private bool _lean = true;
     private CoreWebView2Environment _env = null!;
     private string _profile = "";
     private Action<CoreWebView2>? _setup;
@@ -44,7 +47,10 @@ internal sealed class LivesWindow : Form
     private const int PageWidth = 1100;
     private const int ChatWidth = 340;
 
-    /// <summary>Uma página da janela; uma vaga da Kick sem live no ar fica em branco (<see cref="Url"/> nulo).</summary>
+    /// <summary>
+    /// Uma página da janela: fixa (<see cref="Site"/> nulo, como a de entrar na Twitch) ou uma vaga de live; a
+    /// vaga sem live no ar fica em branco (<see cref="Url"/> nulo).
+    /// </summary>
     private sealed class Page
     {
         public required WebView2 View { get; init; }
@@ -53,9 +59,13 @@ internal sealed class LivesWindow : Form
         public required Panel Frame { get; init; }
 
         public required ToolStripButton Button { get; init; }
-        public bool IsKick { get; init; }
+        public LiveSite? Site { get; init; }
+        public bool IsKick => Site == LiveSite.Kick;
         public string? Url { get; set; }
-        public string? Kick { get; set; }
+
+        /// <summary>O canal da live aberta na vaga.</summary>
+        public string? Channel { get; set; }
+
         public bool Loaded { get; set; }
 
         /// <summary>Onde o vídeo estava na última conferência, e quantas seguidas ele não andou.</summary>
@@ -73,9 +83,12 @@ internal sealed class LivesWindow : Form
         public bool ChatLoaded { get; set; }
     }
 
-    // Manda tocar se estiver pausado e diz onde o vídeo está ("sem" quando a página não tem vídeo).
+    // Aceita o aviso de conteúdo adulto da Twitch (sem isso o vídeo nem começa), manda tocar se estiver pausado e
+    // diz onde o vídeo está ("sem" quando a página não tem vídeo).
     private const string PlayScript =
-        "(() => { const v = document.querySelector('video'); if (!v) return 'sem'; " +
+        "(() => { document.querySelector('[data-a-target=\"player-overlay-mature-accept\"], " +
+        "[data-a-target=\"content-classification-gate-overlay-start-watching-button\"]')?.click(); " +
+        "const v = document.querySelector('video'); if (!v) return 'sem'; " +
         "if (v.paused) v.play().catch(() => {}); return [v.paused, v.readyState, v.currentTime].join(' '); })()";
 
     // Página travada não responde ao script; passado isso, conta como parada.
@@ -150,24 +163,29 @@ internal sealed class LivesWindow : Form
     public int Count => _pages.Count(p => p.Url is not null);
     public int Loaded => _pages.Count(p => p.Url is not null && p.Loaded);
 
-    /// <summary>Os canais da Kick abertos agora.</summary>
-    public IEnumerable<string> KickChannels => _pages.Skip(_kickStart).Select(p => p.Kick).OfType<string>();
+    /// <summary>Os canais de <paramref name="site"/> abertos agora.</summary>
+    public IEnumerable<string> Channels(LiveSite site) => _pages.Where(p => p.Site == site).Select(p => p.Channel).OfType<string>();
 
-    /// <summary>Cada live da Kick aberta e se o vídeo dela está tocando (null: ainda não conferiu).</summary>
-    public IEnumerable<(string Channel, bool? Playing, int Reloads)> KickPlayback => _pages.Skip(_kickStart)
-        .Where(p => p.Kick is not null)
-        .Select(p => (p.Kick!, p.Playing, p.Reloads));
+    public IEnumerable<string> KickChannels => Channels(LiveSite.Kick);
+    public IEnumerable<string> TwitchChannels => Channels(LiveSite.Twitch);
+
+    /// <summary>Cada live de <paramref name="site"/> aberta e se o vídeo dela está tocando (null: ainda não conferiu).</summary>
+    public IEnumerable<(string Channel, bool? Playing, int Reloads)> Playback(LiveSite site) => _pages
+        .Where(p => p.Site == site && p.Channel is not null)
+        .Select(p => (p.Channel!, p.Playing, p.Reloads));
+
+    public IEnumerable<(string Channel, bool? Playing, int Reloads)> KickPlayback => Playback(LiveSite.Kick);
 
     /// <summary>
-    /// Confere se o vídeo de cada live da Kick está andando, que é o que rende os pontos. Pausado: manda
+    /// Confere se o vídeo de cada live aberta está andando, que é o que rende os pontos. Pausado: manda
     /// tocar. Parado em duas conferências seguidas (travou, a live caiu e voltou, a página não carregou por
     /// falta de internet, ou ficou presa na checagem do Cloudflare, que ainda vai comendo memória):
     /// recarrega só aquela página. Se continuar sem voltar, espera o dobro antes de cada nova tentativa
     /// (1, 2 e depois 4 min).
     /// </summary>
-    public async Task WatchKickAsync()
+    public async Task WatchAsync()
     {
-        foreach (var page in _pages.Skip(_kickStart).Where(p => p.Kick is not null).ToList())
+        foreach (var page in _pages.Where(p => p.Site is not null && p.Channel is not null).ToList())
         {
             // A conta pode ter sido desligada (e a janela fechada) no meio da conferência.
             if (IsDisposed)
@@ -193,7 +211,7 @@ internal sealed class LivesWindow : Form
             {
                 page.Reloads++;
                 page.Retries++;
-                Navigate(page, page.Url, page.Kick);
+                Navigate(page, page.Url, page.Channel);
             }
         }
     }
@@ -214,16 +232,16 @@ internal sealed class LivesWindow : Form
     }
 
     /// <summary>
-    /// Roda no player de cada live da Kick aberta e carregada o script que <paramref name="script"/> monta para o
-    /// canal dela, esperando a promessa dele acabar (o resgate dos pontos espera a Kick), e devolve o texto que ele
-    /// entrega, por canal ("" quando a página não respondeu).
+    /// Roda no player de cada live de <paramref name="site"/> aberta e carregada o script que <paramref name="script"/>
+    /// monta para o canal dela, esperando a promessa dele acabar (o resgate dos pontos espera o site), e devolve o texto
+    /// que ele entrega, por canal ("" quando a página não respondeu).
     /// </summary>
-    public async Task<List<(string Channel, string Result)>> EvalKickAsync(Func<string, string> script)
+    public async Task<List<(string Channel, string Result)>> EvalLivesAsync(LiveSite site, Func<string, string> script)
     {
         var results = new List<(string, string)>();
-        foreach (var page in _pages.Skip(_kickStart).Where(p => p.Kick is not null && p.Loaded).ToList())
+        foreach (var page in _pages.Where(p => p.Site == site && p.Channel is not null && p.Loaded).ToList())
         {
-            if (IsDisposed || page.Kick is not string channel || page.View.CoreWebView2 is not CoreWebView2 core)
+            if (IsDisposed || page.Channel is not string channel || page.View.CoreWebView2 is not CoreWebView2 core)
                 continue;
             string result = "";
             try
@@ -250,45 +268,59 @@ internal sealed class LivesWindow : Form
     /// <summary>As abas da Kick abertas (onde ficam o chat e o resgate dos pontos do canal).</summary>
     public IEnumerable<(int Tab, string Name)> KickTabs => _pages
         .Select((page, tab) => (Page: page, Tab: tab))
-        .Where(t => t.Tab >= _kickStart && t.Page.Kick is not null)
-        .Select(t => (t.Tab, "Kick · " + t.Page.Kick));
+        .Where(t => t.Page.IsKick && t.Page.Channel is not null)
+        .Select(t => (t.Tab, "Kick · " + t.Page.Channel));
 
     /// <summary>
-    /// Cria a janela já rodando fora da tela: uma página para cada endereço fixo (Twitch) e
-    /// <paramref name="kickSlots"/> vagas da Kick, preenchidas depois por <see cref="SetKick"/> com o player.
-    /// <paramref name="kickChatUrl"/> dá a página do canal (a do chat) de cada canal.
+    /// Cria a janela já rodando fora da tela: uma página para cada endereço fixo (a de entrar na Twitch),
+    /// <paramref name="twitchSlots"/> vagas da Twitch e <paramref name="kickSlots"/> da Kick, preenchidas depois por
+    /// <see cref="SetLives"/> com o player. <paramref name="kickChatUrl"/> dá a página do canal (a do chat) de cada
+    /// canal da Kick. <paramref name="lean"/> falso tira os cortes de consumo (só o teste de consumo usa, para comparar).
     /// </summary>
     public static async Task<LivesWindow> CreateAsync(CoreWebView2Environment env, string profile, string accountName,
-        IEnumerable<string> urls, int kickSlots, Func<string, string> kickChatUrl, Action<CoreWebView2>? setup)
+        IEnumerable<string> urls, int twitchSlots, int kickSlots, Func<string, string> kickChatUrl, Action<CoreWebView2>? setup,
+        bool lean = true)
     {
-        var window = new LivesWindow(accountName) { _env = env, _profile = profile, _setup = setup, _chatUrl = kickChatUrl };
+        var window = new LivesWindow(accountName) { _env = env, _profile = profile, _setup = setup, _chatUrl = kickChatUrl, _lean = lean };
         window.Park();
         window.Show();
         foreach (var url in urls)
-            window.Navigate(await window.AddPageAsync(kick: false), url, null);
-        window._kickStart = window._pages.Count;
+            window.Navigate(await window.AddPageAsync(null), url, null);
+        for (int i = 0; i < twitchSlots; i++)
+            await window.AddPageAsync(LiveSite.Twitch);
         for (int i = 0; i < kickSlots; i++)
-            await window.AddPageAsync(kick: true);
+            await window.AddPageAsync(LiveSite.Kick);
         if (window._pages.Count > 0)
             window.Select(0);
         return window;
     }
 
     /// <summary>
-    /// Abre nas vagas da Kick só estas lives (as que estão no ar); vaga que sobra fica em branco, sem gastar.
-    /// Uma live que continua no ar fica na vaga dela, sem recarregar.
+    /// Abre nas vagas de <paramref name="site"/> só estas lives (as que estão no ar); vaga que sobra fica em branco,
+    /// sem gastar. Uma live que continua no ar fica na vaga dela, sem recarregar.
     /// </summary>
-    public void SetKick(IReadOnlyList<(string Channel, string Url)> lives)
+    public void SetLives(LiveSite site, IReadOnlyList<(string Channel, string Url)> lives)
     {
-        var slots = _pages.Skip(_kickStart).ToList();
+        var slots = _pages.Where(p => p.Site == site).ToList();
         var wanted = lives.Take(slots.Count).ToList();
-        foreach (var slot in slots.Where(s => s.Kick is not null && !wanted.Any(w => w.Channel == s.Kick)))
+        foreach (var slot in slots.Where(s => s.Channel is not null && !wanted.Any(w => w.Channel == s.Channel)))
             Navigate(slot, null, null);
-        foreach (var (channel, url) in wanted.Where(w => !slots.Any(s => s.Kick == w.Channel)))
-            Navigate(slots.First(s => s.Kick is null), url, channel);
+        foreach (var (channel, url) in wanted.Where(w => !slots.Any(s => s.Channel == w.Channel)))
+            Navigate(slots.First(s => s.Channel is null), url, channel);
         Arrange();
         Fit();
     }
+
+    /// <summary>Fecha as páginas fixas (a de entrar na Twitch, depois que a conta entrou).</summary>
+    public void CloseFixed()
+    {
+        foreach (var page in _pages.Where(p => p.Site is null && p.Url is not null))
+            Navigate(page, null, null);
+        Arrange();
+    }
+
+    /// <summary>Há página fixa aberta (a de entrar na Twitch).</summary>
+    public bool HasFixed => _pages.Any(p => p.Site is null && p.Url is not null);
 
     /// <summary>
     /// Traz a janela para <paramref name="area"/>, da altura dela e já na aba pedida (numa da Kick: as
@@ -393,15 +425,15 @@ internal sealed class LivesWindow : Form
         base.OnFormClosed(e);
     }
 
-    private async Task<Page> AddPageAsync(bool kick)
+    private async Task<Page> AddPageAsync(LiveSite? site)
     {
         var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Theme.Back };
         var frame = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Back };
         frame.Controls.Add(view);
-        var page = new Page { View = view, Frame = frame, IsKick = kick, Button = new ToolStripButton { Visible = false } };
+        var page = new Page { View = view, Frame = frame, Site = site, Button = new ToolStripButton { Visible = false } };
         int tab = _pages.Count;
         page.Button.Click += (_, _) => Select(tab);
-        if (kick)
+        if (page.IsKick)
             frame.Resize += (_, _) => PlaceChat(page);
         _pages.Add(page);
         _bar.Items.Insert(_bar.Items.IndexOf(_next), page.Button);
@@ -415,7 +447,7 @@ internal sealed class LivesWindow : Form
             if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited && page.Url is not null && !IsDisposed)
             {
                 page.Reloads++;
-                Navigate(page, page.Url, page.Kick);
+                Navigate(page, page.Url, page.Channel);
             }
         };
         return page;
@@ -433,12 +465,15 @@ internal sealed class LivesWindow : Form
         core.IsMuted = true;
         core.Settings.IsStatusBarEnabled = false;
         core.NewWindowRequested += (_, e) => PopupWindow.HandleNewWindow(_env, _profile, this, e);
-        // Vídeo na menor qualidade: continua contando como assistindo, gastando bem menos.
-        VideoQuality.LimitToLowest(_env, core);
-        AdBlock.Apply(_env, core);
-        // Ninguém fica olhando as lives: com o "reduzir movimento" do sistema, a Kick corta as animações dela.
-        await core.CallDevToolsProtocolMethodAsync("Emulation.setEmulatedMedia",
-            "{\"features\":[{\"name\":\"prefers-reduced-motion\",\"value\":\"reduce\"}]}");
+        if (_lean)
+        {
+            // Vídeo na menor qualidade: continua contando como assistindo, gastando bem menos.
+            VideoQuality.LimitToLowest(_env, core);
+            AdBlock.Apply(_env, core);
+            // Ninguém fica olhando as lives: com o "reduzir movimento" do sistema, os sites cortam as animações deles.
+            await core.CallDevToolsProtocolMethodAsync("Emulation.setEmulatedMedia",
+                "{\"features\":[{\"name\":\"prefers-reduced-motion\",\"value\":\"reduce\"}]}");
+        }
         _setup?.Invoke(core);
         return core;
     }
@@ -485,9 +520,9 @@ internal sealed class LivesWindow : Form
 
     private void NavigateChat(Page page)
     {
-        page.ChatChannel = page.Kick;
+        page.ChatChannel = page.Channel;
         page.ChatLoaded = false;
-        page.Chat?.CoreWebView2?.Navigate(page.Kick is null ? "about:blank" : _chatUrl(page.Kick));
+        page.Chat?.CoreWebView2?.Navigate(page.Channel is null ? "about:blank" : _chatUrl(page.Channel));
     }
 
     private static void CloseChat(Page page)
@@ -499,24 +534,24 @@ internal sealed class LivesWindow : Form
         chat?.Dispose();
     }
 
-    private void Navigate(Page page, string? url, string? kick)
+    private void Navigate(Page page, string? url, string? channel)
     {
         // Outra live na vaga começa a conferência do zero (recarregar a mesma mantém a contagem).
-        if (kick != page.Kick)
+        if (channel != page.Channel)
             page.Reloads = page.Retries = 0;
         page.Url = url;
-        page.Kick = kick;
+        page.Channel = channel;
         page.Loaded = false;
         page.VideoTime = null;
         page.Stalls = 0;
         page.Playing = null;
-        page.Button.Text = url is null ? "" : TabName(url);
+        page.Button.Text = url is null ? "" : TabName(url, page.Site, channel);
         page.Button.Visible = url is not null;
         page.View.CoreWebView2?.Navigate(url ?? "about:blank");
         // A página do chat segue a vaga: fecha se ela ficou em branco, troca se outra live entrou.
-        if (page.Chat is not null && kick is null)
+        if (page.Chat is not null && channel is null)
             CloseChat(page);
-        else if (page.Chat is not null && page.ChatChannel != kick)
+        else if (page.Chat is not null && page.ChatChannel != channel)
             NavigateChat(page);
     }
 
@@ -624,13 +659,13 @@ internal sealed class LivesWindow : Form
         page.Chat.Bounds = new Rectangle(size.Width - width, 0, width, size.Height);
     }
 
-    private static string TabName(string url)
+    /// <summary>"Twitch · canal" ou "Kick · canal"; a página fixa, pelo endereço (twitch.tv/login → Twitch · login).</summary>
+    private static string TabName(string url, LiveSite? site, string? channel)
     {
+        if (site is LiveSite live && channel is not null)
+            return $"{live} · {channel}";
         var uri = new Uri(url);
-        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        // twitch.tv/popout/<canal>/chat e kick.com/<canal>
-        var channel = segments.Length > 1 && segments[0] == "popout" ? segments[1] : segments.FirstOrDefault() ?? uri.Host;
-        var site = uri.Host.Contains("twitch") ? "Twitch" : uri.Host.Contains("kick") ? "Kick" : uri.Host;
-        return $"{site} · {channel}";
+        var host = uri.Host.Contains("twitch") ? "Twitch" : uri.Host.Contains("kick") ? "Kick" : uri.Host;
+        return $"{host} · {uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? uri.Host}";
     }
 }

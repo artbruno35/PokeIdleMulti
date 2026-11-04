@@ -5,13 +5,7 @@ namespace PokeIdleMulti;
 
 internal enum DeckLayout { Grid, Columns, Focus }
 
-/// <summary>
-/// Como ficar nas lives da Twitch: <see cref="Presence"/> só entra nos chats (sem página, quase não
-/// gasta nada); <see cref="Chat"/> abre a página do chat de cada canal; <see cref="Live"/> abre a live inteira.
-/// </summary>
-internal enum TwitchMode { Presence, Chat, Live }
-
-/// <summary>O bônus do PokeIdle que o deck resgata com os pontos de cada canal da Kick (1 h cada, as horas acumulam).</summary>
+/// <summary>O bônus do PokeIdle que o deck resgata com os pontos de cada canal da Kick ou da Twitch (1 h cada, as horas acumulam).</summary>
 internal enum KickReward { Xp, Capture, Lure }
 
 /// <summary>Preferências do deck salvas entre uma execução e outra.</summary>
@@ -69,15 +63,28 @@ internal sealed class DeckConfig
     /// </summary>
     public List<int> LivesAccounts { get; set; } = new() { 1 };
 
-    /// <summary>Streamers oficiais na Twitch (a lista do painel de bônus do jogo).</summary>
+    /// <summary>
+    /// Streamers oficiais na Twitch (a lista do painel de bônus do jogo), em ordem de prioridade. Desde 04/11/2026 o
+    /// bônus da Twitch sai dos pontos do canal, que só vêm com a live tocando (estar no chat não conta mais): o
+    /// deck abre o player das primeiras que estiverem no ar, até <see cref="TwitchLives"/> (<see cref="TwitchLive"/>).
+    /// </summary>
     public List<string> TwitchChannels { get; set; } = new()
     {
         "tftoddy", "clovaobengala", "axtlol", "patopapao", "matta", "guaxilol1", "rodil",
         "cogu", "luccatv", "faasii", "biscoitao", "techzz", "dersin2k", "denissnidertv",
     };
 
-    /// <summary>O jogo confere quem está no chat: a presença basta e é de longe o mais leve.</summary>
-    public TwitchMode TwitchMode { get; set; } = TwitchMode.Presence;
+    /// <summary>Quantas lives da Twitch abrir em cada conta (Lives → Config…). De fábrica 2, como na Kick.</summary>
+    public int TwitchLives { get; set; } = TwitchLive.DefaultSlots;
+
+    /// <summary>
+    /// O bônus que cada conta resgata sozinha com os pontos das lives da Twitch abertas nela (Lives → Config…);
+    /// null: a conta não resgata.
+    /// </summary>
+    public KickReward?[] RedeemTwitch { get; set; } = new KickReward?[Accounts];
+
+    /// <summary>Pegar sozinho o baú de bônus da Twitch (+50 a cada ~15 min, que só vem para quem clica).</summary>
+    public bool ClaimTwitchBonus { get; set; } = true;
 
     /// <summary>
     /// Streamers oficiais na Kick, em ordem de prioridade. Abre a live inteira, que é o que rende pontos
@@ -114,14 +121,6 @@ internal sealed class DeckConfig
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool[]? KickSingle { get; set; }
 
-    /// <summary>As páginas da Twitch na janela de lives (na presença, a Twitch não precisa de página).</summary>
-    public IEnumerable<string> TwitchUrls() => TwitchMode switch
-    {
-        TwitchMode.Chat => TwitchChannels.Select(c => $"https://www.twitch.tv/popout/{c}/chat?popout="),
-        TwitchMode.Live => TwitchChannels.Select(c => $"https://www.twitch.tv/{c}"),
-        _ => Enumerable.Empty<string>(),
-    };
-
     public static DeckConfig Load(string path)
     {
         DeckConfig config;
@@ -142,6 +141,7 @@ internal sealed class DeckConfig
         config.Kick = Fill(config.Kick, _ => new KickLimit())
             .Select(k => k is { Closed: not null } ? k : new KickLimit()).ToArray();
         config.KickLives = Math.Clamp(config.KickLives, 0, KickLive.MaxSlots);
+        config.TwitchLives = Math.Clamp(config.TwitchLives, 0, TwitchLive.MaxSlots);
         for (int i = 0; i < Accounts && config.KickSingle is not null; i++)
             if (i < config.KickSingle.Length && config.KickSingle[i])
                 config.Kick[i].Slots = Math.Min(config.Kick[i].Slots ?? config.KickLives, 1);
@@ -158,6 +158,8 @@ internal sealed class DeckConfig
         config.KickReward = null;
         // Um número fora da lista (deck.json editado à mão) vira o XP, sem desligar o resgate da conta.
         config.RedeemKick = config.RedeemKick.Select(r => r is KickReward reward && !Enum.IsDefined(reward) ? PokeIdleMulti.KickReward.Xp : r).ToArray();
+        config.RedeemTwitch = Fill(config.RedeemTwitch, _ => null)
+            .Select(r => r is KickReward reward && !Enum.IsDefined(reward) ? PokeIdleMulti.KickReward.Xp : r).ToArray();
         return config;
     }
 
