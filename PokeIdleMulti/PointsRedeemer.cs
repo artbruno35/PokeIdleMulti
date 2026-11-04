@@ -54,6 +54,9 @@ internal sealed class PointsRedeemer
     /// <summary>Sem o login do site no perfil da conta (as lives tocam, mas não dá para resgatar).</summary>
     public bool NoLogin { get; set; }
 
+    /// <summary>Para o registro dos resgates: cada resgate, baú, recusa e pontos que voltaram ("canal: o que houve").</summary>
+    public Action<string>? Log { get; set; }
+
     /// <summary>Volta a resgatar do zero (ao salvar Lives → Config…, depois de vincular o site no jogo).</summary>
     public void Restart()
     {
@@ -230,11 +233,13 @@ internal sealed class PointsRedeemer
         {
             c.ClaimedAt = DateTime.Now;
             c.ClaimError = null;
+            Log?.Invoke($"{channel}: pegou o baú (+50" + (points is int now ? $", saldo {now})" : ")"));
         }
         else if (claimError is not null)
         {
             c.ClaimError = claimError;
             c.ClaimRetryAt = DateTime.Now + RetryWait;
+            Log?.Invoke($"{channel}: o baú não passou ({claimError}); tento de novo em 30 min");
         }
         string bonus = c.ClaimError is string why ? $", baú: {why}" : c.ClaimedAt is DateTime got ? $", baú {got:HH:mm}" : "";
 
@@ -258,6 +263,8 @@ internal sealed class PointsRedeemer
                 ? "os pontos voltaram (vincule a Kick no jogo, em Bônus na Kick, e salve Lives → Config… de novo)"
                 : "os pontos voltaram (vincule a Twitch no jogo, em Bônus Twitch, e salve Lives → Config… de novo)";
             note = $"{Site}: os pontos do resgate voltaram ({Site} não vinculada no jogo?); parei de resgatar nesta conta";
+            Log?.Invoke($"{channel}: os pontos do último resgate voltaram (saldo {balance}; {Site} não vinculada no jogo?); " +
+                        "parei de resgatar nesta conta");
         }
         c.Cost = price;
         c.Points = balance;
@@ -267,11 +274,13 @@ internal sealed class PointsRedeemer
             c.Points = balance - price;
             c.RedeemedAt = DateTime.Now;
             note = $"{Site}: resgatei {title} em {channel}";
+            Log?.Invoke($"{channel}: resgatou {title} ({price} pontos; sobraram {balance - price})");
         }
         else if (refusal is not null)
         {
             c.RetryAt = DateTime.Now + RetryWait;
             note = $"{Site}: o resgate em {channel} foi recusado (erro {refusal}); tento de novo em 30 min";
+            Log?.Invoke($"{channel}: o resgate de {title} foi recusado (erro {refusal}; saldo {balance}); tento de novo em 30 min");
         }
         c.Text = $"{c.Points}/{price} pontos"
                  + (c.RedeemedAt is DateTime at ? $", resgatou {at:HH:mm}" : "")

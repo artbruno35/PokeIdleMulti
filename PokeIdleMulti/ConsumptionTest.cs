@@ -117,7 +117,7 @@ internal sealed class ConsumptionTest : Form
     {
         int slots = Math.Max(1, urls.Length);
         var window = await LivesWindow.CreateAsync(env, "consumo", "teste de consumo", Array.Empty<string>(),
-            site == LiveSite.Twitch ? slots : 0, site == LiveSite.Kick ? slots : 0, c => c, null, lean);
+            site == LiveSite.Twitch ? slots : 0, site == LiveSite.Kick ? slots : 0, (_, c) => c, null, lean);
         window.AllowClose = true;
         // Cada endereço numa vaga, como o deck faz com as lives no ar (o canal é só o nome da vaga).
         window.SetLives(site, urls.Select((url, i) => ($"live{i + 1}", url)).ToList());

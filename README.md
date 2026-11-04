@@ -103,11 +103,19 @@ A cada segundo o deck confere quanto a conta tem e compra no **Market do NPC** o
   aberta. Cada live toca só o player da Kick (player.kick.com), que rende os pontos igual à página do canal e
   gasta uns 40% menos; o vídeo vem na menor qualidade, sem propaganda nem rastreadores, numa janela fora da
   tela. A cada 30 s o deck confere se cada live está tocando e recarrega a que travou ou caiu.
-- **Botão kick** de cada conta: escolher qual live da Kick fechar nela (ou todas), e abrir de novo.
+- **Botão lives** de cada conta (no cabeçalho): escolher qual live da Kick ou da Twitch fechar nela (ou todas de
+  um site), e abrir de novo. A vaga de uma live fechada não abre outra sozinha. O botão fica marcado enquanto
+  houver live fechada.
 - **💰 Pontos da Kick:** abre a página de cada canal da conta, lado a lado, só com o rodapé do chat: o botão
   dos pontos e o espaço do popup de escolher o bônus. Essas páginas só existem enquanto o 💰 está aberto;
   fechar devolve a memória, e o player continua rendendo. A altura da janela muda arrastando a borda, e o deck
   guarda. "Próxima conta ▶" passa para a conta seguinte; "Página inteira" mostra a página do canal toda.
+- **💰 Pontos da Twitch:** o mesmo, com o chat em janela de cada live da Twitch da conta (o botão dos pontos e o
+  baú ficam embaixo, ao lado do campo de mensagem). As mensagens ficam escondidas; "Página inteira" mostra
+  tudo.
+- **Registro dos resgates** (Lives → Registro dos resgates…): cada resgate, cada baú, cada recusa e cada vez que
+  os pontos voltaram, com a hora, a conta, o site e o canal, o mais novo em cima. Fica em
+  `%LOCALAPPDATA%\PokeIdleMulti\resgates.log`, de uma vez para outra.
 - **Resgate automático** (Lives → Config…, uma linha por conta, com uma escolha para a Kick e outra para a
   Twitch, nenhuma de fábrica): o bônus do PokeIdle que cada conta resgata em cada site (+15% XP por 300 pontos,
   Captura por 500 ou Shiny por 1000). O deck confere o saldo de cada live aberta nessas contas (Kick a cada

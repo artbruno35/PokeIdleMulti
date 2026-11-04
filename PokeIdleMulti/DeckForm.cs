@@ -49,6 +49,8 @@ internal sealed class DeckForm : Form
     private readonly PointsRedeemer[] _redeemTwitch = Enumerable.Range(0, Accounts).Select(_ => new PointsRedeemer(LiveSite.Twitch)).ToArray();
     private DateTime _twitchPointsAt;
     private bool _twitchPointsBusy;
+    private readonly RedeemLog _redeemLog;
+    private RedeemLogWindow? _redeemLogWindow;
     private DateTime _kickRedeemAt;
     private bool _kickRedeeming;
     private readonly Dictionary<(int Pane, string Extension), PopupWindow> _extensionWindows = new();
@@ -67,6 +69,7 @@ internal sealed class DeckForm : Form
     private readonly ToolStripButton _zoomInButton = new("+");
     private readonly ToolStripDropDownButton _livesButton = new("Lives");
     private readonly ToolStripDropDownButton _kickButton = new("💰 Pontos da Kick") { Visible = false };
+    private readonly ToolStripDropDownButton _twitchButton = new("💰 Pontos da Twitch") { Visible = false };
     private readonly ToolStripButton _extensionsButton = new("🧩 Extensões");
     private readonly ToolStripDropDownButton _sniperButton = new("🎯 Sniper") { Visible = false };
     private readonly bool[] _hasSniper = new bool[Accounts];
@@ -107,6 +110,17 @@ internal sealed class DeckForm : Form
             _config.Off[3] = true;
             _config.TwitchLives = 1;
         }
+        // O registro dos resgates (o do autoteste começa vazio a cada vez).
+        var logPath = Path.Combine(_root, "resgates.log");
+        if (selfTest && File.Exists(logPath))
+            File.Delete(logPath);
+        _redeemLog = new RedeemLog(logPath);
+        for (int i = 0; i < Accounts; i++)
+        {
+            int index = i;
+            _redeemKick[i].Log = text => _redeemLog.Add(_config.AccountNames[index], LiveSite.Kick, text);
+            _redeemTwitch[i].Log = text => _redeemLog.Add(_config.AccountNames[index], LiveSite.Twitch, text);
+        }
         _store = new ExtensionStore(_root);
         if (_config.Layout != DeckLayout.Focus)
             _layoutBeforeFocus = _config.Layout;
@@ -140,10 +154,17 @@ internal sealed class DeckForm : Form
             pane.PowerRequested += p => _ = SetPaneOffAsync(p.Index, !p.Off);
             pane.PopupRequested += (p, extension, anchor) => _ = OpenExtensionPopupAsync(p, extension, anchor);
             pane.VoteRequested += p => _ = OpenVoteAsync(p, null);
-            pane.KickMenuOpening += (p, items) =>
+            // O botão lives do cabeçalho: as lives da Kick e as da Twitch da conta, para fechar ou abrir de novo.
+            pane.LivesMenuOpening += (p, items) =>
             {
                 items.Clear();
-                items.AddRange(KickMenuItems(p.Index).ToArray());
+                foreach (var site in new[] { LiveSite.Kick, LiveSite.Twitch })
+                {
+                    if (items.Count > 0)
+                        items.Add(new ToolStripSeparator());
+                    items.Add(new ToolStripMenuItem($"Lives da {site}:") { Enabled = false });
+                    items.AddRange(LiveMenuItems(p.Index, site).ToArray());
+                }
             };
             pane.TopIdleLinkRequested += (p, uri) => _ = OpenVoteAsync(p, uri);
             _panes[i] = pane;
@@ -220,8 +241,13 @@ internal sealed class DeckForm : Form
         _livesButton.DropDownItems.Add("…");
         _kickButton.Alignment = ToolStripItemAlignment.Right;
         _kickButton.ToolTipText = "Abre os chats da Kick da conta, para resgatar os pontos do canal (300 pontos = 1 h de +15% de XP)";
-        _kickButton.DropDownOpening += (_, _) => FillKickMenu();
+        _kickButton.DropDownOpening += (_, _) => FillPointsMenu(LiveSite.Kick);
         _kickButton.DropDownItems.Add("…");
+        _twitchButton.Alignment = ToolStripItemAlignment.Right;
+        _twitchButton.ToolTipText = "Abre os chats da Twitch da conta, com o botão dos pontos e o baú, para resgatar na mão " +
+                                    "(300 pontos = 1 h de +15% de XP)";
+        _twitchButton.DropDownOpening += (_, _) => FillPointsMenu(LiveSite.Twitch);
+        _twitchButton.DropDownItems.Add("…");
         _sniperButton.Alignment = ToolStripItemAlignment.Right;
         _sniperButton.ToolTipText = "Liga ou desliga o Rotom Sniper (compras automáticas no mercado) em todas as contas";
         _sniperButton.DropDownOpening += (_, _) => FillSniperMenu();
@@ -240,6 +266,7 @@ internal sealed class DeckForm : Form
         _bar.Items.Add(_sniperButton);
         _bar.Items.Add(_livesButton);
         _bar.Items.Add(_kickButton);
+        _bar.Items.Add(_twitchButton);
     }
 
     private void BuildStatus()
@@ -685,86 +712,95 @@ internal sealed class DeckForm : Form
             .Select(i => $"{_config.AccountNames[i]}: {LivesSummary(i)}")
             .ToList();
         _livesStatus.Text = parts.Count == 0 ? "Lives desligadas" : "Lives · " + string.Join(" · ", parts);
-        _kickButton.Visible = _lives.Any(l => l is not null && l.KickTabs.Any());
-        RenderKickButtons();
+        _kickButton.Visible = _lives.Any(l => l is not null && l.Tabs(LiveSite.Kick).Any());
+        _twitchButton.Visible = _lives.Any(l => l is not null && l.Tabs(LiveSite.Twitch).Any());
+        RenderLiveButtons();
     }
 
-    /// <summary>O botão kick de cada conta: o que dá para fechar ou abrir de novo, ou por que não tem nada.</summary>
-    private void RenderKickButtons()
+    /// <summary>Os botões kick e twitch de cada conta: o que dá para fechar ou abrir de novo, ou por que não tem nada.</summary>
+    private void RenderLiveButtons()
     {
         for (int i = 0; i < Accounts; i++)
         {
-            var pane = _panes[i];
-            var open = KickOpen(i);
-            if (_lives[i] is null)
-                pane.SetKick(false, false, !_config.LivesAccounts.Contains(i + 1)
-                    ? "As lives estão desligadas nesta conta (ligue em Lives, na barra de cima)"
-                    : "Nenhuma live da Kick para abrir (Lives → Config…)");
-            else if (_config.Kick[i].Limited)
-                pane.SetKick(true, true, "Lives da Kick fechadas nesta conta: " +
-                    (_config.Kick[i].Slots == 0 ? "todas" : KickShutText(i)) +
-                    (open.Count > 0 ? $" (abertas: {string.Join(", ", open)})" : "") + ". Clique para fechar outra ou abrir de novo");
-            else if (open.Count > 0)
-                pane.SetKick(true, false, $"Escolher qual live da Kick fechar nesta conta (abertas: {string.Join(", ", open)}). " +
-                    "A vaga de uma live fechada não abre outra sozinha");
-            else
-                pane.SetKick(false, false, !_selfTest && _kickLive.Count == 0 ? "Conferindo quem está no ar na Kick…"
-                    : "Nenhuma live da Kick aberta nesta conta agora");
+            var (enabled, closed, tip) = LiveButton(i, LiveSite.Kick);
+            _panes[i].SetKick(enabled, closed, tip);
+            (enabled, closed, tip) = LiveButton(i, LiveSite.Twitch);
+            _panes[i].SetTwitch(enabled, closed, tip);
         }
     }
 
-    /// <summary>As lives da Kick abertas na conta, na ordem da lista.</summary>
-    private List<string> KickOpen(int index) => (_lives[index]?.KickChannels ?? Enumerable.Empty<string>())
-        .OrderBy(c => _config.KickChannels.IndexOf(c)).ToList();
+    private (bool Enabled, bool Closed, string Tooltip) LiveButton(int index, LiveSite site)
+    {
+        var open = LivesOpen(index, site);
+        var limit = _config.Limits(site)[index];
+        if (_lives[index] is null)
+            return (false, false, !_config.LivesAccounts.Contains(index + 1)
+                ? "As lives estão desligadas nesta conta (ligue em Lives, na barra de cima)"
+                : $"Nenhuma live da {site} para abrir (Lives → Config…)");
+        if (limit.Limited)
+            return (true, true, $"Lives da {site} fechadas nesta conta: " + (limit.Slots == 0 ? "todas" : ShutText(index, site)) +
+                (open.Count > 0 ? $" (abertas: {string.Join(", ", open)})" : "") + ". Clique para fechar outra ou abrir de novo");
+        if (open.Count > 0)
+            return (true, false, $"Escolher qual live da {site} fechar nesta conta (abertas: {string.Join(", ", open)}). " +
+                "A vaga de uma live fechada não abre outra sozinha");
+        bool checking = !_selfTest && (site == LiveSite.Kick ? _kickLive : _twitchLive).Count == 0;
+        return (false, false, site == LiveSite.Twitch && _twitchLogin[index] == false ? "Entre na Twitch nesta conta (Lives → Mostrar)"
+            : checking ? $"Conferindo quem está no ar na {site}…" : $"Nenhuma live da {site} aberta nesta conta agora");
+    }
 
-    /// <summary>Os canais da lista que o kick fechou na conta.</summary>
-    private List<string> KickShut(int index) => _config.KickChannels.Where(_config.Kick[index].Closed.Contains).ToList();
+    /// <summary>As lives de <paramref name="site"/> abertas na conta, na ordem da lista.</summary>
+    private List<string> LivesOpen(int index, LiveSite site) => (_lives[index]?.Channels(site) ?? Enumerable.Empty<string>())
+        .OrderBy(c => _config.Channels(site).IndexOf(c)).ToList();
+
+    /// <summary>Os canais da lista que o botão do site fechou na conta.</summary>
+    private List<string> LivesShut(int index, LiveSite site) => _config.Channels(site).Where(_config.Limits(site)[index].Closed.Contains).ToList();
 
     /// <summary>As fechadas pelo nome, ou quantas vagas a conta perdeu (do tempo em que o kick só fechava a 2ª).</summary>
-    private string KickShutText(int index)
+    private string ShutText(int index, LiveSite site)
     {
-        var shut = KickShut(index);
-        int missing = _config.KickLives - _config.Kick[index].SlotsOf(_config.KickLives);
+        var shut = LivesShut(index, site);
+        int max = _config.Lives(site);
+        int missing = max - _config.Limits(site)[index].SlotsOf(max);
         return shut.Count > 0 ? string.Join(", ", shut) : missing == 1 ? "1 vaga" : $"{missing} vagas";
     }
 
-    /// <summary>O menu do kick: fechar cada live aberta ou todas; abrir de novo cada fechada ou todas.</summary>
-    private List<ToolStripItem> KickMenuItems(int index)
+    /// <summary>O menu do kick ou do twitch: fechar cada live aberta ou todas; abrir de novo cada fechada ou todas.</summary>
+    private List<ToolStripItem> LiveMenuItems(int index, LiveSite site)
     {
         var items = new List<ToolStripItem>();
-        var open = KickOpen(index);
-        var shut = KickShut(index);
+        var open = LivesOpen(index, site);
+        var shut = LivesShut(index, site);
         foreach (var channel in open)
-            items.Add(new ToolStripMenuItem($"Fechar a live de {channel}", null, (_, _) => CloseKick(index, channel)));
+            items.Add(new ToolStripMenuItem($"Fechar a live de {channel}", null, (_, _) => CloseLive(index, site, channel)));
         if (open.Count > 0)
-            items.Add(new ToolStripMenuItem("Fechar todas (nenhuma live da Kick nesta conta)", null, (_, _) => CloseKick(index, null)));
-        if (_config.Kick[index].Limited)
+            items.Add(new ToolStripMenuItem($"Fechar todas (nenhuma live da {site} nesta conta)", null, (_, _) => CloseLive(index, site, null)));
+        if (_config.Limits(site)[index].Limited)
         {
             if (items.Count > 0)
                 items.Add(new ToolStripSeparator());
             foreach (var channel in shut)
-                items.Add(new ToolStripMenuItem($"Abrir de novo a live de {channel}", null, (_, _) => ReopenKick(index, channel)));
-            items.Add(new ToolStripMenuItem($"Abrir todas de novo (volta às {_config.KickLives} primeiras da lista no ar)", null,
-                (_, _) => ReopenKick(index, null)));
+                items.Add(new ToolStripMenuItem($"Abrir de novo a live de {channel}", null, (_, _) => ReopenLive(index, site, channel)));
+            items.Add(new ToolStripMenuItem($"Abrir todas de novo (volta às {_config.Lives(site)} primeiras da lista no ar)", null,
+                (_, _) => ReopenLive(index, site, null)));
         }
         if (items.Count == 0)
-            items.Add(new ToolStripMenuItem("Nenhuma live da Kick aberta nesta conta agora") { Enabled = false });
+            items.Add(new ToolStripMenuItem($"Nenhuma live da {site} aberta nesta conta agora") { Enabled = false });
         return items;
     }
 
-    /// <summary>Uma linha por live da Kick de cada conta: abre a janela das lives já nela, com o chat.</summary>
-    private void FillKickMenu()
+    /// <summary>Uma linha por conta com live do site: abre a janela das lives já nela, com os chats (e o botão dos pontos).</summary>
+    private void FillPointsMenu(LiveSite site)
     {
-        var items = _kickButton.DropDownItems;
+        var items = (site == LiveSite.Kick ? _kickButton : _twitchButton).DropDownItems;
         items.Clear();
         for (int i = 0; i < Accounts; i++)
         {
             int index = i;
-            if (_lives[i] is LivesWindow window && window.KickTabs.Any())
-                items.Add($"{_config.AccountNames[i]} · {string.Join(", ", window.KickChannels)}", null, (_, _) => ShowKick(index));
+            if (_lives[i] is LivesWindow window && window.Tabs(site).Any())
+                items.Add($"{_config.AccountNames[i]} · {string.Join(", ", window.Channels(site))}", null, (_, _) => ShowPoints(index, site));
         }
         if (items.Count == 0)
-            items.Add(new ToolStripMenuItem("Nenhuma live da Kick no ar agora") { Enabled = false });
+            items.Add(new ToolStripMenuItem($"Nenhuma live da {site} no ar agora") { Enabled = false });
     }
 
     /// <summary>"Twitch no ar: cogu ▶, Kick no ar: biscoitao ▶" ou "Twitch: entre na Twitch…".</summary>
@@ -787,8 +823,11 @@ internal sealed class DeckForm : Form
                 parts.Add(_twitchLogin[index] == false ? "Twitch: entre na Twitch (Lives → Mostrar)"
                         + (_twitchSeen[index] is string seen ? $" [{seen}]" : "")
                     : window.TwitchChannels.Any() ? "Twitch no ar: " + string.Join(", ", Played(LiveSite.Twitch))
+                    : _config.Twitch[index].Slots == 0 ? "Twitch: todas fechadas no botão lives"
                     : _twitchLive.Count == 0 ? "Twitch: conferindo quem está no ar…"
                     : "Twitch: nenhuma live da lista no ar");
+            if (_config.Twitch[index].Limited && _config.Twitch[index].SlotsOf(_config.TwitchLives) > 0)
+                parts.Add("Twitch fechadas no botão lives: " + ShutText(index, LiveSite.Twitch));
             if (twitchRedeem?.Stopped is string twitchStopped)
                 parts.Add("resgate da Twitch parado: " + twitchStopped);
             else if (twitchRedeem is { NoLogin: true } && window.TwitchChannels.Any())
@@ -796,7 +835,7 @@ internal sealed class DeckForm : Form
             var playback = Played(LiveSite.Kick);
             if (_config.KickChannels.Count > 0 && _config.KickLives > 0)
                 parts.Add(kick.Count > 0 ? "Kick no ar: " + string.Join(", ", playback)
-                    : _config.Kick[index].Slots == 0 ? "Kick: todas fechadas no kick"
+                    : _config.Kick[index].Slots == 0 ? "Kick: todas fechadas no botão lives"
                     : _kickLive.Count == 0 ? "Kick: conferindo quem está no ar…"
                     : "Kick: nenhuma live da lista no ar");
             if (redeem?.Stopped is string stopped)
@@ -804,7 +843,7 @@ internal sealed class DeckForm : Form
             else if (redeem is { NoLogin: true } && kick.Count > 0)
                 parts.Add("resgate: entre na Kick nas lives desta conta");
             if (_config.Kick[index].Limited && _config.Kick[index].SlotsOf(_config.KickLives) > 0)
-                parts.Add("fechadas no kick: " + KickShutText(index));
+                parts.Add("Kick fechadas no botão lives: " + ShutText(index, LiveSite.Kick));
             if (window.Loaded < window.Count)
                 parts.Add("carregando…");
         }
@@ -882,7 +921,7 @@ internal sealed class DeckForm : Form
             }
             _ram.Text = $"RAM ~{Gb(game + lives + other)} GB: jogo {Gb(game)} · lives {Gb(lives)} · navegador {Gb(other)}";
             _ram.ToolTipText = $"{count} processos do navegador embutido (memória privada, a que pesa no PC).\n" +
-                               "Para aliviar: feche lives da Kick no botão kick de cada conta, abra menos lives (Lives → Config…), " +
+                               "Para aliviar: feche lives no botão lives do cabeçalho de cada conta, abra menos lives (Lives → Config…), " +
                                "ou desligue (no canto direito do cabeçalho) as contas que não está usando.";
         }
         catch
@@ -1491,9 +1530,15 @@ internal sealed class DeckForm : Form
         ? $"https://kick.test/kick.html?canal={Uri.EscapeDataString(channel)}"
         : $"https://player.kick.com/{channel}";
 
-    private string KickChatUrl(string channel) => _selfTest
-        ? $"https://kick.test/kick.html?canal={Uri.EscapeDataString(channel)}&chat=1"
-        : $"https://kick.com/{channel}";
+    // A página do chat, com o botão dos pontos, que abre por cima do player só no 💰: na Kick a do canal, na Twitch o
+    // chat em janela (bem mais leve que a página do canal, e com o botão dos pontos e o baú).
+    private string ChatUrl(LiveSite site, string channel) => (site, _selfTest) switch
+    {
+        (LiveSite.Kick, true) => $"https://kick.test/kick.html?canal={Uri.EscapeDataString(channel)}&chat=1",
+        (LiveSite.Kick, false) => $"https://kick.com/{channel}",
+        (_, true) => $"https://twitch.test/twitch.html?canal={Uri.EscapeDataString(channel)}&chat=1",
+        _ => $"https://www.twitch.tv/popout/{Uri.EscapeDataString(channel)}/chat?popout=",
+    };
 
     private async Task OpenLivesAsync(int index)
     {
@@ -1514,9 +1559,9 @@ internal sealed class DeckForm : Form
         if (urls.Count > 0 || twitchSlots > 0 || kickSlots > 0)
         {
             _lives[index] = await LivesWindow.CreateAsync(_env, _panes[index].ProfileName, _config.AccountNames[index], urls,
-                twitchSlots, kickSlots, KickChatUrl, SelfTestSetup);
+                twitchSlots, kickSlots, ChatUrl, SelfTestSetup);
             var window = _lives[index]!;
-            window.NextRequested += () => ShowNextKick(index);
+            window.NextRequested += site => ShowNextPoints(index, site);
             window.PointsHeight = _config.KickPointsHeight;
             window.PointsHeightChanged += height =>
             {
@@ -1687,11 +1732,16 @@ internal sealed class DeckForm : Form
             // Antes da primeira resposta de cada site não abre nada: a live pode estar offline. Na Twitch, sem o login
             // na conta também não: o player sem login não rende pontos.
             if (_selfTest || _twitchLive.Count > 0 || _twitchLogin[i] == false)
+            {
+                // Sem as fechadas no botão twitch da conta, e cada uma levou a vaga dela junto.
+                var twitch = _config.Twitch[i];
+                var open = _config.TwitchChannels.Where(c => !twitch.Closed.Contains(c));
                 window.SetLives(LiveSite.Twitch, _twitchLogin[i] == false ? new()
-                    : KickLive.Pick(_config.TwitchChannels, _twitchLive, _config.TwitchLives).Select(c => (c, TwitchUrl(c))).ToList());
+                    : KickLive.Pick(open, _twitchLive, twitch.SlotsOf(_config.TwitchLives)).Select(c => (c, TwitchUrl(c))).ToList());
+            }
             if (_selfTest || _kickLive.Count > 0)
             {
-                // Sem as fechadas no botão kick da conta, e cada uma levou a vaga dela junto.
+                // Sem as fechadas no botão lives da conta, e cada uma levou a vaga dela junto.
                 var kick = _config.Kick[i];
                 var channels = _config.KickChannels.Where(c => !kick.Closed.Contains(c));
                 window.SetLives(LiveSite.Kick, KickLive.Pick(channels, _kickLive, kick.SlotsOf(_config.KickLives)).Select(c => (c, KickUrl(c))).ToList());
@@ -1701,38 +1751,38 @@ internal sealed class DeckForm : Form
     }
 
     /// <summary>
-    /// Fecha no kick a live de <paramref name="channel"/> nesta conta (ou todas, com nulo). A vaga fica em
-    /// branco: a conferência de 2 em 2 min não abre outra live nela até abrir de novo.
+    /// Fecha no botão do site (kick ou twitch) a live de <paramref name="channel"/> nesta conta (ou todas, com nulo). A
+    /// vaga fica em branco: a conferência de 2 em 2 min não abre outra live nela até abrir de novo.
     /// </summary>
-    private void CloseKick(int index, string? channel)
+    private void CloseLive(int index, LiveSite site, string? channel)
     {
-        var kick = _config.Kick[index];
-        foreach (var shut in channel is null ? KickOpen(index) : new List<string> { channel })
-            if (!kick.Closed.Contains(shut))
-                kick.Closed.Add(shut);
-        kick.Slots = channel is null ? 0 : Math.Max(0, kick.SlotsOf(_config.KickLives) - 1);
+        var limit = _config.Limits(site)[index];
+        foreach (var shut in channel is null ? LivesOpen(index, site) : new List<string> { channel })
+            if (!limit.Closed.Contains(shut))
+                limit.Closed.Add(shut);
+        limit.Slots = channel is null ? 0 : Math.Max(0, limit.SlotsOf(_config.Lives(site)) - 1);
         SaveConfig();
         ApplyLives();
-        _panes[index].Note(channel is null ? "Kick: fechei todas as lives" : $"Kick: fechei a live de {channel}");
+        _panes[index].Note(channel is null ? $"{site}: fechei todas as lives" : $"{site}: fechei a live de {channel}");
     }
 
-    /// <summary>Abre de novo a live de <paramref name="channel"/> fechada no kick (ou todas, com nulo), com a vaga dela.</summary>
-    private void ReopenKick(int index, string? channel)
+    /// <summary>Abre de novo a live de <paramref name="channel"/> fechada no botão do site (ou todas, com nulo), com a vaga dela.</summary>
+    private void ReopenLive(int index, LiveSite site, string? channel)
     {
-        var kick = _config.Kick[index];
+        var limit = _config.Limits(site)[index];
         if (channel is null)
         {
-            kick.Closed.Clear();
-            kick.Slots = null;
+            limit.Closed.Clear();
+            limit.Slots = null;
         }
-        else if (kick.Closed.Remove(channel))
+        else if (limit.Closed.Remove(channel))
         {
-            kick.Slots = kick.SlotsOf(_config.KickLives) + 1;
-            kick.Fit(_config.KickLives);
+            limit.Slots = limit.SlotsOf(_config.Lives(site)) + 1;
+            limit.Fit(_config.Lives(site));
         }
         SaveConfig();
         ApplyLives();
-        _panes[index].Note(channel is null ? "Kick: as lives voltam a abrir" : $"Kick: {channel} volta a abrir (se estiver no ar)");
+        _panes[index].Note(channel is null ? $"{site}: as lives voltam a abrir" : $"{site}: {channel} volta a abrir (se estiver no ar)");
     }
 
     private void CloseLives(int index)
@@ -1823,9 +1873,23 @@ internal sealed class DeckForm : Form
             items.Add(item);
         }
         items.Add(new ToolStripSeparator());
-        items.Add("Mostrar as lives (para entrar na Twitch/Kick ou resgatar pontos da Kick)", null, (_, _) => ShowLives())
+        items.Add("Mostrar as lives (para entrar na Twitch/Kick ou resgatar pontos)", null, (_, _) => ShowLives())
             .Enabled = _lives.Any(l => l is not null);
+        int today = _redeemLog.Lines.Count(l => l.StartsWith(DateTime.Now.ToString("dd/MM/yy")));
+        items.Add($"Registro dos resgates… ({today} hoje)", null, (_, _) => ShowRedeemLog());
         items.Add("Config…", null, async (_, _) => await EditChannelsAsync());
+    }
+
+    /// <summary>A janela do registro dos resgates (uma só; clicar de novo traz ela para a frente).</summary>
+    private void ShowRedeemLog()
+    {
+        if (_redeemLogWindow is { IsDisposed: false })
+        {
+            _redeemLogWindow.Activate();
+            return;
+        }
+        _redeemLogWindow = new RedeemLogWindow(_redeemLog);
+        _redeemLogWindow.Show(this);
     }
 
     private void ShowLives()
@@ -1836,28 +1900,28 @@ internal sealed class DeckForm : Form
     }
 
     /// <summary>
-    /// Os chats da Kick da conta, para resgatar os pontos; "Próxima conta" na janela passa para a seguinte
-    /// que tem live da Kick aberta.
+    /// Os chats de <paramref name="site"/> da conta, com o botão dos pontos, para resgatar; "Próxima conta" na janela
+    /// passa para a seguinte que tem live daquele site aberta.
     /// </summary>
-    private void ShowKick(int index)
+    private void ShowPoints(int index, LiveSite site)
     {
-        var withKick = Enumerable.Range(0, Accounts).Where(i => _lives[i]?.KickTabs.Any() == true).ToList();
-        if (_lives[index] is not LivesWindow window || !withKick.Contains(index))
+        var with = Enumerable.Range(0, Accounts).Where(i => _lives[i]?.Tabs(site).Any() == true).ToList();
+        if (_lives[index] is not LivesWindow window || !with.Contains(index))
             return;
-        foreach (int i in withKick)
-            _lives[i]!.HasNext = withKick.Count > 1;
-        window.Reveal(Screen.FromControl(this).WorkingArea, window.KickTabs.First().Tab);
+        foreach (int i in with)
+            _lives[i]!.HasNext = with.Count > 1;
+        window.Reveal(Screen.FromControl(this).WorkingArea, window.Tabs(site).First().Tab);
     }
 
-    private void ShowNextKick(int index)
+    private void ShowNextPoints(int index, LiveSite site)
     {
         for (int step = 1; step < Accounts; step++)
         {
             int next = (index + step) % Accounts;
-            if (_lives[next]?.KickTabs.Any() != true)
+            if (_lives[next]?.Tabs(site).Any() != true)
                 continue;
             _lives[index]?.Park();
-            ShowKick(next);
+            ShowPoints(next, site);
             return;
         }
     }
@@ -1871,6 +1935,8 @@ internal sealed class DeckForm : Form
         _config.TwitchChannels = dialog.TwitchChannels;
         _config.KickChannels = dialog.KickChannels;
         _config.TwitchLives = Math.Clamp(dialog.TwitchLives, 0, TwitchLive.MaxSlots);
+        foreach (var twitch in _config.Twitch)
+            twitch.Fit(_config.TwitchLives);
         SetKickLives(dialog.KickLives);
         // Salvar de novo também volta a resgatar na conta que parou (depois de vincular a Kick ou a Twitch no jogo).
         _config.RedeemKick = dialog.RedeemKick;
@@ -2346,7 +2412,7 @@ internal sealed class DeckForm : Form
             int chatsParked = lives0?.ChatsOpen ?? -1;
             // 💰 Pontos da Kick: só as colunas de chat lado a lado (a página do canal fica na largura de
             // computador, encostada à direita), com a altura dos pontos (a tela baixa limita), no meio da tela.
-            ShowKick(0);
+            ShowPoints(0, LiveSite.Kick);
             bool chatsUp = await WaitFor(() => lives0 is not null && lives0.ChatsLoaded == 2, 15);
             await Task.Delay(300);
             string chatShown = lives0 is null ? "" : string.Join(",", await lives0.EvalChatsAsync(ChatShown));
@@ -2367,6 +2433,22 @@ internal sealed class DeckForm : Form
                 && lives0 is { Parked: true, Visible: true },
                 $"fora={chatsParked} páginas de chat; mostrando={chatShown}; depois de fechar={chatsAfter}");
             Check("pontos da Kick: os 2 chats lado a lado, com a altura dos pontos", fits && sideBySide, layout);
+
+            // 💰 Pontos da Twitch: o chat em janela de cada live da Twitch da conta (com o botão dos pontos), só com o
+            // 💰 aberto, numa coluna do tamanho dela; fechar fecha essa página.
+            bool twitchPointsButton = _twitchButton.Available;
+            ShowPoints(0, LiveSite.Twitch);
+            bool twitchChatUp = await WaitFor(() => lives0 is not null && lives0.ChatsLoaded == 1, 15);
+            await Task.Delay(300);
+            var twitchChats = lives0 is null ? new List<string>() : await lives0.EvalChatsAsync("location.search");
+            var twitchColumn = lives0?.ColumnsOf(LiveSite.Twitch).ToList() ?? new();
+            lives0?.Close();
+            await Task.Delay(300);
+            Activate();
+            Check("💰 Pontos da Twitch: abre o chat em janela de cada live da Twitch da conta, e fecha ao sair",
+                twitchPointsButton && twitchChatUp && twitchChats.SequenceEqual(new[] { "\"?canal=tftoddy&chat=1\"" })
+                && twitchColumn.Count == 1 && twitchColumn[0].View.Size == twitchColumn[0].Frame.Size && lives0?.ChatsOpen == 0,
+                $"botão={twitchPointsButton} chats={string.Join(",", twitchChats)} coluna={string.Join(" ", twitchColumn)} depois={lives0?.ChatsOpen}");
 
             // Propaganda cortada nas lives: o pedido a um site de anúncio volta 403 do próprio deck.
             if (lives0 is not null)
@@ -2450,12 +2532,12 @@ internal sealed class DeckForm : Form
             if (lives0 is not null)
                 await lives0.EvalAsync("window.__marca = 'mesma'; 1");
             string kickBefore = string.Join(",", _panes.Select(p => p.KickState));
-            var menuBefore = KickMenuItems(0).Select(i => i.Text).ToList();
-            CloseKick(0, "biscoitao");
+            var menuBefore = LiveMenuItems(0, LiveSite.Kick).Select(i => i.Text).ToList();
+            CloseLive(0, LiveSite.Kick, "biscoitao");
             bool chosen = await WaitFor(() => lives0 is not null && lives0.Count == 2 && lives0.Loaded == lives0.Count
                 && lives0.KickChannels.SequenceEqual(new[] { "surskity" }), 10);
             var stayed = lives0 is null ? new List<string>() : await lives0.EvalAsync("window.__marca || 'recarregou'");
-            var menuAfter = KickMenuItems(0).Select(i => i.Text).ToList();
+            var menuAfter = LiveMenuItems(0, LiveSite.Kick).Select(i => i.Text).ToList();
             // Todas no ar: a vaga do biscoitao não abre outra (fica 1 live, a mais de cima da lista sem as fechadas).
             _kickLive["yetz"] = true;
             ApplyLives();
@@ -2468,16 +2550,38 @@ internal sealed class DeckForm : Form
                 && menuAfter.Contains("Fechar a live de surskity") && menuAfter.Contains("Abrir de novo a live de biscoitao"),
                 $"botões antes={kickBefore} menu antes={string.Join("|", menuBefore)} marca={string.Join(",", stayed)} sem repor={noRefill} " +
                 $"Kick={KickNow()} botão={_panes[0].KickState} menu depois={string.Join("|", menuAfter)}");
-            CloseKick(0, null);
+            CloseLive(0, LiveSite.Kick, null);
             ApplyLives();
             bool none = await WaitFor(() => lives0 is not null && lives0.Count == 1 && !lives0.KickChannels.Any(), 10);
             Check("kick: fechar todas", none && _config.Kick[0].Slots == 0 && _panes[0].KickState == "fechada", $"Kick={KickNow()}");
-            ReopenKick(0, null);
+            ReopenLive(0, LiveSite.Kick, null);
             bool reopened = await WaitFor(() => lives0 is not null && lives0.Count == 3 && lives0.Loaded == lives0.Count
                 && lives0.KickChannels.Order().SequenceEqual(new[] { "biscoitao", "yetz" }), 15);
             Check("kick: abrir todas de novo volta às 2 primeiras da lista no ar",
                 reopened && _panes[0].KickState == "ligado" && !_config.Kick[0].Limited,
                 $"Kick={KickNow()} botão={_panes[0].KickState}");
+
+            // Botão twitch na conta 1: o mesmo do kick, para a live da Twitch (1 vaga no autoteste). Fechada, a vaga não
+            // abre outra da lista; abrir de novo volta.
+            string twitchBefore = _panes[0].TwitchState;
+            var twitchMenuBefore = LiveMenuItems(0, LiveSite.Twitch).Select(i => i.Text).ToList();
+            CloseLive(0, LiveSite.Twitch, "tftoddy");
+            bool twitchShut = await WaitFor(() => lives0 is not null && !lives0.TwitchChannels.Any(), 10);
+            UpdateBar();
+            string twitchShutState = _panes[0].TwitchState;
+            var twitchMenuAfter = LiveMenuItems(0, LiveSite.Twitch).Select(i => i.Text).ToList();
+            string twitchShutSummary = LivesSummary(0);
+            ReopenLive(0, LiveSite.Twitch, null);
+            bool twitchReopened = await WaitFor(() => lives0 is not null && lives0.Loaded == lives0.Count
+                && lives0.TwitchChannels.SequenceEqual(new[] { "tftoddy" }), 15);
+            UpdateBar();
+            Check("twitch: o botão da conta fecha a live da Twitch (a vaga não abre outra) e abre de novo",
+                twitchBefore == "ligado" && twitchMenuBefore.Take(2).SequenceEqual(new[] { "Fechar a live de tftoddy", "Fechar todas (nenhuma live da Twitch nesta conta)" })
+                && twitchShut && twitchShutState == "fechada" && twitchMenuAfter.Contains("Abrir de novo a live de tftoddy")
+                && twitchShutSummary.Contains("Twitch: todas fechadas no botão lives") && twitchReopened && _panes[0].TwitchState == "ligado"
+                && !_config.Twitch[0].Limited,
+                $"antes={twitchBefore} menu={string.Join("|", twitchMenuBefore)} fechou={twitchShut} botão={twitchShutState} " +
+                $"menu depois={string.Join("|", twitchMenuAfter)} ({twitchShutSummary}) voltou={twitchReopened}");
 
             // As lives da Kick da conta dividem um processo (--process-per-site), e o jogo fica em outro.
             var liveProcesses = _env is null ? new List<CoreWebView2ProcessExtendedInfo>()
@@ -2644,6 +2748,27 @@ internal sealed class DeckForm : Form
             _config.RedeemTwitch = new KickReward?[Accounts];
             _redeemTwitch[0].Restart();
 
+            // Registro dos resgates: cada resgate, baú e pontos que voltaram, com a conta, o site e o canal, no
+            // resgates.log; a janela mostra o mais novo em cima.
+            var logLines = _redeemLog.Lines.ToList();
+            string account1 = _config.AccountNames[0];
+            bool Logged(string text) => logLines.Any(l => l.Contains($"  {account1} · {text}"));
+            ShowRedeemLog();
+            await Task.Delay(300);
+            string shownLog = _redeemLogWindow?.ShownText ?? "";
+            _redeemLogWindow?.Close();
+            Activate();
+            Check("registro dos resgates: grava resgates, baús e pontos que voltaram no resgates.log, e mostra o mais novo em cima",
+                Logged("Kick · biscoitao: resgatou Bônus de +15% Capture Boost (500 pontos; sobraram 710)")
+                && Logged("Kick · biscoitao: resgatou Bônus de +15% Capture Boost (500 pontos; sobraram 210)")
+                && Logged("Kick · biscoitao: os pontos do último resgate voltaram")
+                && Logged("Twitch · tftoddy: pegou o baú (+50, saldo 510)")
+                && Logged("Twitch · tftoddy: resgatou Bônus de +15% Capture Boost (500 pontos; sobraram 10)")
+                && Logged("Twitch · tftoddy: pegou o baú (+50, saldo 60)")
+                && File.ReadAllLines(_redeemLog.FilePath).SequenceEqual(logLines)
+                && logLines.Count > 0 && shownLog.StartsWith(logLines[^1]),
+                string.Join(" | ", logLines));
+
             // deck.json: o de antes (um resgate para todas as contas) vira o mesmo bônus em cada conta; um número fora
             // da lista vira o XP; de fábrica nenhuma conta resgata.
             var redeemPath = Path.Combine(_root, "deck-resgate.json");
@@ -2714,7 +2839,7 @@ internal sealed class DeckForm : Form
                 && lives3.KickChannels.SequenceEqual(new[] { "biscoitao", "yetz", "surskity" })
                 && lives3.TwitchChannels.SequenceEqual(new[] { "tftoddy", "clovaobengala" }), 20);
             _config.TwitchLives = 1;
-            ShowKick(0);
+            ShowPoints(0, LiveSite.Kick);
             await Task.Delay(300);
             // Lado a lado: cada coluna começa num lugar diferente da janela.
             int columns3 = lives3?.KickLayout.Select(c => c.Frame.Left).Distinct().Count() ?? 0;

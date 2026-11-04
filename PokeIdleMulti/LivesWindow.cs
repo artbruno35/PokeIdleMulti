@@ -39,7 +39,7 @@ internal sealed class LivesWindow : Form
     private CoreWebView2Environment _env = null!;
     private string _profile = "";
     private Action<CoreWebView2>? _setup;
-    private Func<string, string> _chatUrl = channel => channel;
+    private Func<LiveSite, string, string> _chatUrl = (_, channel) => channel;
 
     // A página do canal da Kick é desenhada na largura de computador, que põe o chat numa lateral de 340 px à
     // direita com o botão dos pontos embaixo (na largura de celular esse botão some). Na coluna de cada live
@@ -103,13 +103,16 @@ internal sealed class LivesWindow : Form
 
     private ChatView _chatApplied;
 
-    private static string ChatScript(ChatView view)
+    private static string ChatScript(ChatView view, LiveSite site)
     {
-        string css = view switch
+        // Na Kick é a página do canal; na Twitch, o chat em janela (o botão dos pontos fica embaixo, ao lado do campo).
+        string css = (view, site) switch
         {
-            ChatView.Hidden => "#channel-chatroom, #chatroom { display: none !important; }",
-            ChatView.Points => "#chatroom-messages, [data-testid=\"pinned-message-modal\"], [aria-label=\"Expand leaderboard\"] " +
-                               "{ visibility: hidden !important; }",
+            (ChatView.Hidden, LiveSite.Kick) => "#channel-chatroom, #chatroom { display: none !important; }",
+            (ChatView.Points, LiveSite.Kick) => "#chatroom-messages, [data-testid=\"pinned-message-modal\"], [aria-label=\"Expand leaderboard\"] " +
+                                                "{ visibility: hidden !important; }",
+            (ChatView.Points, LiveSite.Twitch) => ".chat-scrollable-area__message-container, .pinned-chat__message " +
+                                                  "{ visibility: hidden !important; }",
             _ => "",
         };
         return "(() => { let s = document.getElementById('deck-chat'); if (!s) { s = document.createElement('style'); " +
@@ -132,16 +135,16 @@ internal sealed class LivesWindow : Form
             Arrange();
             Fit();
         };
-        _next.Click += (_, _) => NextRequested?.Invoke();
+        _next.Click += (_, _) => NextRequested?.Invoke(SelectedSite ?? LiveSite.Kick);
         _stack.Resize += (_, _) => Arrange();
         Controls.Add(_stack);
         Controls.Add(_bar);
     }
 
-    /// <summary>Pediu para ir à conta seguinte (o deck tira esta da tela e mostra a próxima).</summary>
-    public event Action? NextRequested;
+    /// <summary>Pediu para ir à conta seguinte, nos pontos do site mostrado (o deck tira esta da tela e mostra a próxima).</summary>
+    public event Action<LiveSite>? NextRequested;
 
-    /// <summary>Mostra o botão "Próxima conta" (há mais de uma conta com live da Kick).</summary>
+    /// <summary>Mostra o botão "Próxima conta" (há mais de uma conta com live do site mostrado).</summary>
     public bool HasNext
     {
         get => _next.Visible;
@@ -265,23 +268,25 @@ internal sealed class LivesWindow : Form
         return results;
     }
 
-    /// <summary>As abas da Kick abertas (onde ficam o chat e o resgate dos pontos do canal).</summary>
-    public IEnumerable<(int Tab, string Name)> KickTabs => _pages
+    /// <summary>As abas de <paramref name="site"/> abertas (onde ficam o chat e o resgate dos pontos do canal).</summary>
+    public IEnumerable<(int Tab, string Name)> Tabs(LiveSite site) => _pages
         .Select((page, tab) => (Page: page, Tab: tab))
-        .Where(t => t.Page.IsKick && t.Page.Channel is not null)
-        .Select(t => (t.Tab, "Kick · " + t.Page.Channel));
+        .Where(t => t.Page.Site == site && t.Page.Channel is not null)
+        .Select(t => (t.Tab, $"{site} · {t.Page.Channel}"));
+
+    public IEnumerable<(int Tab, string Name)> KickTabs => Tabs(LiveSite.Kick);
 
     /// <summary>
     /// Cria a janela já rodando fora da tela: uma página para cada endereço fixo (a de entrar na Twitch),
     /// <paramref name="twitchSlots"/> vagas da Twitch e <paramref name="kickSlots"/> da Kick, preenchidas depois por
-    /// <see cref="SetLives"/> com o player. <paramref name="kickChatUrl"/> dá a página do canal (a do chat) de cada
-    /// canal da Kick. <paramref name="lean"/> falso tira os cortes de consumo (só o teste de consumo usa, para comparar).
+    /// <see cref="SetLives"/> com o player. <paramref name="chatUrl"/> dá a página do chat (com o botão dos pontos) de cada
+    /// canal, por site. <paramref name="lean"/> falso tira os cortes de consumo (só o teste de consumo usa, para comparar).
     /// </summary>
     public static async Task<LivesWindow> CreateAsync(CoreWebView2Environment env, string profile, string accountName,
-        IEnumerable<string> urls, int twitchSlots, int kickSlots, Func<string, string> kickChatUrl, Action<CoreWebView2>? setup,
+        IEnumerable<string> urls, int twitchSlots, int kickSlots, Func<LiveSite, string, string> chatUrl, Action<CoreWebView2>? setup,
         bool lean = true)
     {
-        var window = new LivesWindow(accountName) { _env = env, _profile = profile, _setup = setup, _chatUrl = kickChatUrl, _lean = lean };
+        var window = new LivesWindow(accountName) { _env = env, _profile = profile, _setup = setup, _chatUrl = chatUrl, _lean = lean };
         window.Park();
         window.Show();
         foreach (var url in urls)
@@ -350,10 +355,12 @@ internal sealed class LivesWindow : Form
         Location = new Point(screens.Right + 100, screens.Top);
     }
 
-    /// <summary>Onde está cada coluna da Kick na janela, e a página que aparece nela (autoteste).</summary>
-    public IEnumerable<(Rectangle Frame, Rectangle View)> KickLayout => _pages
-        .Where(p => p.IsKick && p.Url is not null)
+    /// <summary>Onde está cada coluna de <paramref name="site"/> na janela, e a página que aparece nela (autoteste).</summary>
+    public IEnumerable<(Rectangle Frame, Rectangle View)> ColumnsOf(LiveSite site) => _pages
+        .Where(p => p.Site == site && p.Url is not null)
         .Select(p => (p.Frame.Bounds, (p.Chat ?? p.View).Bounds));
+
+    public IEnumerable<(Rectangle Frame, Rectangle View)> KickLayout => ColumnsOf(LiveSite.Kick);
 
     /// <summary>Páginas do chat abertas agora, e quantas já carregaram (autoteste).</summary>
     public int ChatsOpen => _pages.Count(p => p.Chat is not null);
@@ -433,7 +440,7 @@ internal sealed class LivesWindow : Form
         var page = new Page { View = view, Frame = frame, Site = site, Button = new ToolStripButton { Visible = false } };
         int tab = _pages.Count;
         page.Button.Click += (_, _) => Select(tab);
-        if (page.IsKick)
+        if (page.Site is not null)
             frame.Resize += (_, _) => PlaceChat(page);
         _pages.Add(page);
         _bar.Items.Insert(_bar.Items.IndexOf(_next), page.Button);
@@ -478,10 +485,12 @@ internal sealed class LivesWindow : Form
         return core;
     }
 
-    /// <summary>Abre por cima do player de cada live da Kick a página do canal (o chat e o botão dos pontos).</summary>
+    /// <summary>Abre por cima do player de cada live do site mostrado a página do chat (com o botão dos pontos).</summary>
     private void ShowChats()
     {
-        foreach (var page in OpenKick.Where(p => p.Chat is null))
+        if (SelectedSite is not LiveSite site)
+            return;
+        foreach (var page in Open(site).Where(p => p.Chat is null))
             _ = OpenChatAsync(page);
     }
 
@@ -509,7 +518,7 @@ internal sealed class LivesWindow : Form
         if (page.Chat != chat)
             return;
         core.NavigationCompleted += (_, e) => page.ChatLoaded = page.Chat == chat && e.IsSuccess;
-        core.DOMContentLoaded += (_, _) => _ = core.ExecuteScriptAsync(ChatScript(CurrentChat));
+        core.DOMContentLoaded += (_, _) => _ = core.ExecuteScriptAsync(ChatScript(CurrentChat, page.Site ?? LiveSite.Kick));
         core.ProcessFailed += (_, e) =>
         {
             if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited && page.Chat == chat && !IsDisposed)
@@ -522,7 +531,7 @@ internal sealed class LivesWindow : Form
     {
         page.ChatChannel = page.Channel;
         page.ChatLoaded = false;
-        page.Chat?.CoreWebView2?.Navigate(page.Channel is null ? "about:blank" : _chatUrl(page.Channel));
+        page.Chat?.CoreWebView2?.Navigate(page.Channel is null || page.Site is not LiveSite site ? "about:blank" : _chatUrl(site, page.Channel));
     }
 
     private static void CloseChat(Page page)
@@ -561,7 +570,7 @@ internal sealed class LivesWindow : Form
     {
         _chatApplied = CurrentChat;
         foreach (var page in _pages.Where(p => p.Chat?.CoreWebView2 is not null && p.ChatLoaded))
-            _ = page.Chat!.ExecuteScriptAsync(ChatScript(_chatApplied));
+            _ = page.Chat!.ExecuteScriptAsync(ChatScript(_chatApplied, page.Site ?? LiveSite.Kick));
     }
 
     private void Select(int tab)
@@ -571,10 +580,13 @@ internal sealed class LivesWindow : Form
         Fit();
     }
 
-    private List<Page> OpenKick => _pages.Where(p => p.IsKick && p.Url is not null).ToList();
+    private List<Page> Open(LiveSite site) => _pages.Where(p => p.Site == site && p.Url is not null).ToList();
 
-    // Numa aba da Kick, as lives dela lado a lado (a não ser com "Página inteira").
-    private bool Columns => !_fullPage.Checked && _selected < _pages.Count && _pages[_selected].IsKick && OpenKick.Count > 0;
+    /// <summary>O site da aba escolhida (null: uma página fixa, como a de entrar na Twitch).</summary>
+    private LiveSite? SelectedSite => _selected < _pages.Count ? _pages[_selected].Site : null;
+
+    // Numa aba de live, as lives daquele site lado a lado (a não ser com "Página inteira").
+    private bool Columns => !_fullPage.Checked && SelectedSite is LiveSite site && Open(site).Count > 0;
 
     /// <summary>
     /// Quem fica na frente, e as colunas da Kick lado a lado. Só muda a ordem e o tamanho: as páginas de
@@ -584,10 +596,15 @@ internal sealed class LivesWindow : Form
     {
         if (_pages.Count == 0)
             return;
-        var kick = OpenKick;
-        // A aba escolhida pode ter ficado em branco (a live saiu do ar): vai para outra aberta.
+        // A aba escolhida pode ter ficado em branco (a live saiu do ar): vai para outra aberta, do mesmo site se tiver.
         if (_selected >= _pages.Count || _pages[_selected].Url is null)
-            _selected = Math.Max(0, kick.Count > 0 ? _pages.IndexOf(kick[0]) : _pages.FindIndex(p => p.Url is not null));
+        {
+            var same = SelectedSite is LiveSite was ? Open(was) : new();
+            var kickOpen = Open(LiveSite.Kick);
+            _selected = Math.Max(0, same.Count > 0 ? _pages.IndexOf(same[0])
+                : kickOpen.Count > 0 ? _pages.IndexOf(kickOpen[0]) : _pages.FindIndex(p => p.Url is not null));
+        }
+        var kick = SelectedSite is LiveSite shown ? Open(shown) : new();
         bool columns = Columns;
         _stack.SuspendLayout();
         foreach (var page in _pages)
@@ -613,8 +630,8 @@ internal sealed class LivesWindow : Form
         for (int i = 0; i < _pages.Count; i++)
             _pages[i].Button.Checked = columns ? kick.Contains(_pages[i]) : i == _selected;
         _fullPage.Visible = kick.Count > 0;
-        // Na tela, numa aba da Kick: abre as páginas do chat que faltam.
-        if (_revealed && (columns || _pages[_selected].IsKick))
+        // Na tela, numa aba de live: abre as páginas do chat que faltam.
+        if (_revealed && (columns || SelectedSite is not null))
             ShowChats();
         if (CurrentChat != _chatApplied)
             ApplyChat();
@@ -630,7 +647,7 @@ internal sealed class LivesWindow : Form
             return;
         var area = Screen.FromControl(this).WorkingArea;
         bool columns = Columns;
-        int content = columns ? Math.Max(2, OpenKick.Count) * LogicalToDeviceUnits(ChatWidth) : LogicalToDeviceUnits(PageWidth);
+        int content = columns && SelectedSite is LiveSite site ? Math.Max(2, Open(site).Count) * LogicalToDeviceUnits(ChatWidth) : LogicalToDeviceUnits(PageWidth);
         int width = Math.Min(area.Width, content + Width - _stack.ClientSize.Width);
         int height = columns ? Math.Min(area.Height, LogicalToDeviceUnits(PointsHeight)) : area.Height;
         int x = area.X + (area.Width - width) / 2 + _order * LogicalToDeviceUnits(40);
@@ -649,13 +666,16 @@ internal sealed class LivesWindow : Form
         PointsHeightChanged?.Invoke(PointsHeight);
     }
 
-    /// <summary>A página do canal na largura de computador, encostada à direita da coluna: o chat aparece inteiro.</summary>
+    /// <summary>
+    /// Na Kick, a página do canal na largura de computador, encostada à direita da coluna: o chat aparece inteiro. Na
+    /// Twitch, o chat em janela, do tamanho da coluna.
+    /// </summary>
     private void PlaceChat(Page page)
     {
         if (page.Chat is null)
             return;
         var size = page.Frame.ClientSize;
-        int width = Math.Max(size.Width, LogicalToDeviceUnits(PageWidth));
+        int width = page.IsKick ? Math.Max(size.Width, LogicalToDeviceUnits(PageWidth)) : size.Width;
         page.Chat.Bounds = new Rectangle(size.Width - width, 0, width, size.Height);
     }
 

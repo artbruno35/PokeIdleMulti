@@ -25,7 +25,7 @@ internal sealed class AccountPane : UserControl
     private readonly ToolStripButton _reload = new(Theme.ReloadGlyph) { Font = Theme.Symbols };
     private readonly ToolStripButton _mute = new(Theme.SoundGlyph) { Font = Theme.Symbols };
     private readonly ToolStripButton _vote = new("🗳 Votar") { Visible = false };
-    private readonly ToolStripDropDownButton _kick = new("kick") { Enabled = false };
+    private readonly ToolStripDropDownButton _lives = new("lives") { Enabled = false };
     private readonly ToolStripButton _power = new(Theme.PowerGlyph) { Font = Theme.Symbols };
     private readonly ToolStripButton _restock = new(Theme.CartGlyph) { Font = Theme.Symbols };
     private readonly Label _offNote = new()
@@ -42,7 +42,9 @@ internal sealed class AccountPane : UserControl
     private string? _statusText = "abrindo…";
     private string? _note;
     private DateTime _noteUntil;
-    private bool _kickClosed;
+    // O que o deck disse do botão para cada site (o botão "lives" junta os dois).
+    private (bool Enabled, bool Closed, string Tooltip) _kick = (false, false, "");
+    private (bool Enabled, bool Closed, string Tooltip) _twitch = (false, false, "");
     private bool _loginScreen;
     private string _voteText = "🗳 Votar";
     private bool _voteShort;
@@ -70,8 +72,8 @@ internal sealed class AccountPane : UserControl
         _info.ForeColor = Theme.Muted;
 
         // Itens à direita entram da direita para a esquerda.
-        _power.Alignment = _focus.Alignment = _reload.Alignment = _mute.Alignment = _kick.Alignment = _vote.Alignment =
-            _restock.Alignment = ToolStripItemAlignment.Right;
+        _power.Alignment = _focus.Alignment = _reload.Alignment = _mute.Alignment = _lives.Alignment =
+            _vote.Alignment = _restock.Alignment = ToolStripItemAlignment.Right;
         _restock.Click += (_, _) => RestockRequested?.Invoke(this);
         ShowRestock(null);
         _power.ToolTipText = "Desligar esta conta: o jogo, as extensões, as lives e o voto dela param (ela continua aqui no deck)";
@@ -84,12 +86,12 @@ internal sealed class AccountPane : UserControl
         _reload.Click += (_, _) => ReloadRequested?.Invoke(this);
         _mute.Click += (_, _) => SetMuted(!Muted);
         _vote.Click += (_, _) => VoteRequested?.Invoke(this);
-        _kick.DropDownOpening += (_, _) => KickMenuOpening?.Invoke(this, _kick.DropDownItems);
-        _kick.DropDownItems.Add("…");
+        _lives.DropDownOpening += (_, _) => LivesMenuOpening?.Invoke(this, _lives.DropDownItems);
+        _lives.DropDownItems.Add("…");
         _header.DoubleClick += (_, _) => FocusRequested?.Invoke(this);
         _header.SizeChanged += (_, _) => FitHeader();
-        _header.Items.AddRange(new ToolStripItem[] { _dot, _name, _info, _power, _focus, _reload, _mute, _kick, _restock, _vote });
-        foreach (var item in new ToolStripItem[] { _power, _focus, _reload, _mute, _kick, _restock, _vote })
+        _header.Items.AddRange(new ToolStripItem[] { _dot, _name, _info, _power, _focus, _reload, _mute, _lives, _restock, _vote });
+        foreach (var item in new ToolStripItem[] { _power, _focus, _reload, _mute, _lives, _restock, _vote })
             Roomy(item);
 
         _offNote.Font = new Font(Font.FontFamily, 11f);
@@ -122,8 +124,8 @@ internal sealed class AccountPane : UserControl
     /// <summary>O carrinho do cabeçalho: abrir a recompra desta conta.</summary>
     public event Action<AccountPane>? RestockRequested;
 
-    /// <summary>O menu do botão kick abrindo: o deck põe nele as lives da Kick para fechar ou abrir de novo.</summary>
-    public event Action<AccountPane, ToolStripItemCollection>? KickMenuOpening;
+    /// <summary>O menu do botão lives abrindo: o deck põe nele as lives da Kick e da Twitch para fechar ou abrir de novo.</summary>
+    public event Action<AccountPane, ToolStripItemCollection>? LivesMenuOpening;
 
     /// <summary>Desligada: fica no deck, mas sem o jogo (nem as extensões, que só rodam nele), lives ou voto.</summary>
     public bool Off { get; private set; }
@@ -461,19 +463,34 @@ internal sealed class AccountPane : UserControl
     private static string VoteIcon(string text) => text.Length > 2 ? text[..2] : text;
 
     /// <summary>
-    /// Botão kick do cabeçalho: apagado quando não tem o que fechar (o motivo fica na dica), marcado
-    /// quando tem live da Kick fechada nele.
+    /// A parte da Kick do botão lives do cabeçalho: sem o que fechar (o motivo fica na dica), ou com live da Kick
+    /// fechada nele. O botão fica apagado quando nenhum dos dois sites tem o que fechar, e marcado quando algum tem
+    /// live fechada.
     /// </summary>
     public void SetKick(bool enabled, bool closed, string tooltip)
     {
-        _kick.Enabled = enabled;
-        _kickClosed = closed;
-        _kick.ForeColor = closed ? Theme.Accent : Theme.Text;
-        _kick.ToolTipText = tooltip;
+        _kick = (enabled, closed, tooltip);
+        ShowLives();
     }
 
-    /// <summary>O estado do botão kick ("ligado", "apagado" ou "fechada"), para o autoteste.</summary>
-    public string KickState => _kickClosed ? "fechada" : _kick.Enabled ? "ligado" : "apagado";
+    /// <summary>A parte da Twitch do botão lives do cabeçalho (a mesma da Kick).</summary>
+    public void SetTwitch(bool enabled, bool closed, string tooltip)
+    {
+        _twitch = (enabled, closed, tooltip);
+        ShowLives();
+    }
+
+    private void ShowLives()
+    {
+        _lives.Enabled = _kick.Enabled || _twitch.Enabled;
+        _lives.ForeColor = _kick.Closed || _twitch.Closed ? Theme.Accent : Theme.Text;
+        _lives.ToolTipText = $"Kick: {_kick.Tooltip}\nTwitch: {_twitch.Tooltip}";
+    }
+
+    /// <summary>A parte de cada site do botão lives ("ligado", "apagado" ou "fechada"), para o autoteste.</summary>
+    public string KickState => _kick.Closed ? "fechada" : _kick.Enabled ? "ligado" : "apagado";
+
+    public string TwitchState => _twitch.Closed ? "fechada" : _twitch.Enabled ? "ligado" : "apagado";
 
     public string? NoteText => DateTime.Now < _noteUntil ? _note : null;
 
@@ -488,7 +505,7 @@ internal sealed class AccountPane : UserControl
                         "Clique no botão de ligar, no canto direito do cabeçalho, para ligar.";
         _offNote.Visible = off;
         WebView.Visible = !off;
-        _reload.Visible = _mute.Visible = _kick.Visible = _restock.Visible = !off;
+        _reload.Visible = _mute.Visible = _lives.Visible = _restock.Visible = !off;
         foreach (var item in _extensionItems)
             item.Visible = !off;
         _power.ToolTipText = off

@@ -112,7 +112,19 @@ internal sealed class DeckConfig
     public KickReward? KickReward { get; set; }
 
     /// <summary>O que o botão kick fechou em cada conta.</summary>
-    public KickLimit[] Kick { get; set; } = NewKick();
+    public LiveLimit[] Kick { get; set; } = NewLimits();
+
+    /// <summary>O que o botão twitch fechou em cada conta.</summary>
+    public LiveLimit[] Twitch { get; set; } = NewLimits();
+
+    /// <summary>O que os botões kick e twitch fecharam em cada conta, por site.</summary>
+    public LiveLimit[] Limits(LiveSite site) => site == LiveSite.Kick ? Kick : Twitch;
+
+    /// <summary>Quantas lives de <paramref name="site"/> abrir em cada conta.</summary>
+    public int Lives(LiveSite site) => site == LiveSite.Kick ? KickLives : TwitchLives;
+
+    /// <summary>Os canais de <paramref name="site"/>, em ordem de prioridade.</summary>
+    public List<string> Channels(LiveSite site) => site == LiveSite.Kick ? KickChannels : TwitchChannels;
 
     /// <summary>A recompra de pokebolas, revives e poções de cada conta (o carrinho no cabeçalho dela).</summary>
     public RestockConfig[] Restock { get; set; } = Enumerable.Range(0, Accounts).Select(_ => new RestockConfig()).ToArray();
@@ -138,8 +150,8 @@ internal sealed class DeckConfig
         config.Zoom = Fill(config.Zoom, _ => 1.0);
         config.Muted = Fill(config.Muted, _ => false);
         config.Off = Fill(config.Off, _ => false);
-        config.Kick = Fill(config.Kick, _ => new KickLimit())
-            .Select(k => k is { Closed: not null } ? k : new KickLimit()).ToArray();
+        config.Kick = Fill(config.Kick, _ => new LiveLimit())
+            .Select(k => k is { Closed: not null } ? k : new LiveLimit()).ToArray();
         config.KickLives = Math.Clamp(config.KickLives, 0, KickLive.MaxSlots);
         config.TwitchLives = Math.Clamp(config.TwitchLives, 0, TwitchLive.MaxSlots);
         for (int i = 0; i < Accounts && config.KickSingle is not null; i++)
@@ -148,6 +160,10 @@ internal sealed class DeckConfig
         config.KickSingle = null;
         foreach (var kick in config.Kick)
             kick.Fit(config.KickLives);
+        config.Twitch = Fill(config.Twitch, _ => new LiveLimit())
+            .Select(t => t is { Closed: not null } ? t : new LiveLimit()).ToArray();
+        foreach (var twitch in config.Twitch)
+            twitch.Fit(config.TwitchLives);
         config.Restock = Fill(config.Restock, _ => new RestockConfig()).Select(r => (r ?? new RestockConfig()).Normalized()).ToArray();
         config.Focused = Math.Clamp(config.Focused, 0, Accounts - 1);
         config.KickPointsHeight = Math.Clamp(config.KickPointsHeight, 300, 3000);
@@ -176,26 +192,26 @@ internal sealed class DeckConfig
         }
     }
 
-    private static KickLimit[] NewKick() => Enumerable.Range(0, Accounts).Select(_ => new KickLimit()).ToArray();
+    private static LiveLimit[] NewLimits() => Enumerable.Range(0, Accounts).Select(_ => new LiveLimit()).ToArray();
 
     private static T[] Fill<T>(T[]? values, Func<int, T> fallback) =>
         Enumerable.Range(0, Accounts).Select(i => values is not null && i < values.Length ? values[i] : fallback(i)).ToArray();
 }
 
-/// <summary>As lives da Kick que o botão kick fechou numa conta.</summary>
-internal sealed class KickLimit
+/// <summary>As lives de um site (Kick ou Twitch) que o botão dele (kick ou twitch) fechou numa conta.</summary>
+internal sealed class LiveLimit
 {
     /// <summary>
-    /// Quantas lives da Kick abrem nesta conta; null é o limite do deck (<see cref="DeckConfig.KickLives"/>). Cada
-    /// live fechada leva a vaga dela junto, para a conferência de 2 em 2 min não abrir outra no lugar; 0 é
-    /// "fechar todas".
+    /// Quantas lives do site abrem nesta conta; null é o limite do deck (<see cref="DeckConfig.KickLives"/>,
+    /// <see cref="DeckConfig.TwitchLives"/>). Cada live fechada leva a vaga dela junto, para a conferência de 2 em 2
+    /// min não abrir outra no lugar; 0 é "fechar todas".
     /// </summary>
     public int? Slots { get; set; }
 
-    /// <summary>Os canais fechados: não abrem nesta conta até abrir de novo no kick.</summary>
+    /// <summary>Os canais fechados: não abrem nesta conta até abrir de novo no botão.</summary>
     public List<string> Closed { get; set; } = new();
 
-    /// <summary>Alguma live fechada no kick (o botão fica marcado).</summary>
+    /// <summary>Alguma live fechada no botão (ele fica marcado).</summary>
     [JsonIgnore]
     public bool Limited => Slots is not null || Closed.Count > 0;
 
