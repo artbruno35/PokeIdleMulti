@@ -19,7 +19,7 @@ internal static class VideoQuality
     };
 
     private static readonly Regex Bandwidth = new(@"(?<![-A-Z])BANDWIDTH=(\d+)");
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private static readonly HttpClient Http = new(Net.Handler()) { Timeout = TimeSpan.FromSeconds(10) };
 
     public static void LimitToLowest(CoreWebView2Environment env, CoreWebView2 core)
     {

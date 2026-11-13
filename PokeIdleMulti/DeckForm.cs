@@ -72,6 +72,7 @@ internal sealed class DeckForm : Form
     private readonly ToolStripDropDownButton _kickButton = new("💰 Pontos da Kick") { Visible = false };
     private readonly ToolStripDropDownButton _twitchButton = new("💰 Pontos da Twitch") { Visible = false };
     private readonly ToolStripButton _extensionsButton = new("🧩 Extensões");
+    private readonly ToolStripButton _proxyButton = new("🛡 Proxy");
     private readonly ToolStripDropDownButton _sniperButton = new("🎯 Sniper") { Visible = false };
     private readonly bool[] _hasSniper = new bool[Accounts];
     private readonly ToolStripButton _fullscreenButton = new("⛶ Tela cheia");
@@ -90,6 +91,10 @@ internal sealed class DeckForm : Form
     private bool _topIdleLookup;
     private readonly System.Windows.Forms.Timer _clock = new() { Interval = 1000 };
     private CoreWebView2Environment? _env;
+    private ProxyRelay? _proxyRelay;
+    private string? _proxyIp;
+    private long _netDown, _netUp, _netTick = Stopwatch.GetTimestamp();
+    private readonly ToolStripStatusLabel _net = new();
     private DeckLayout _layoutBeforeFocus = DeckLayout.Grid;
     private bool _fullscreen;
     private FormWindowState _restoreState;
@@ -219,6 +224,11 @@ internal sealed class DeckForm : Form
         _bar.Items.Add(new ToolStripSeparator());
         _bar.Items.Add(_echoButton);
 
+        _proxyButton.ToolTipText = "Proxy residencial: um IP de saída para todas as contas e lives (o deck roda um relé local que faz o login). Mudar só vale no próximo deck aberto";
+        _proxyButton.Click += (_, _) => OpenProxy();
+        _bar.Items.Add(_proxyButton);
+        ShowProxy();
+
         _zoomOutButton.ToolTipText = "Diminuir o zoom de todas as contas";
         _zoomInButton.ToolTipText = "Aumentar o zoom de todas as contas";
         _zoomButton.ToolTipText = "Zoom de todas as contas";
@@ -278,6 +288,11 @@ internal sealed class DeckForm : Form
         _status.ShowItemToolTips = true;
         _ram.ForeColor = Theme.Muted;
         _livesStatus.ForeColor = Theme.Muted;
+        _net.ForeColor = Theme.Muted;
+        _net.IsLink = false;
+        _net.Click += (_, _) => OpenProxy();
+        _status.Items.Add(_net);
+        _status.Items.Add(new ToolStripStatusLabel("·") { ForeColor = Theme.Muted });
         _status.Items.Add(_ram);
         _status.Items.Add(new ToolStripStatusLabel("·") { ForeColor = Theme.Muted });
         _status.Items.Add(_livesStatus);
@@ -313,10 +328,43 @@ internal sealed class DeckForm : Form
         if (_selfTest)
             PrepareSelfTestFiles();
 
+        // O proxy primeiro: nenhum pedido do deck (navegador ou .NET) pode sair antes do relé existir.
+        var args = BrowserArguments;
+        if (!_selfTest && _config.Proxy.Usable)
+        {
+            var proxy = _config.Proxy;
+            _proxyRelay = new ProxyRelay(proxy.Host, proxy.Port, proxy.User, proxy.Password, ProxyRelay.PreferredPort);
+            _proxyRelay.Start();
+            Net.ProxyPort = _proxyRelay.Port;
+            AccountPane.ViaProxy = true;
+            // Sem o IP real vazando: WebRTC só por dentro do proxy e sem QUIC/UDP direto.
+            args += $" --proxy-server=http://127.0.0.1:{_proxyRelay.Port}" +
+                    " --force-webrtc-ip-handling-policy=disable_non_proxied_udp --disable-quic";
+
+            // Confere o proxy antes de abrir as contas: sem isso, um proxy errado só aparece como "não carregou" em cada uma.
+            var (ok, detail) = await CheckProxyAsync();
+            if (ok)
+            {
+                _proxyIp = detail;
+            }
+            else
+            {
+                var answer = MessageBox.Show(this,
+                    "O proxy não respondeu:\n\n" + detail + "\n\nConfira em 🛡 Proxy (endereço, porta, login e senha).\n\n" +
+                    "Abrir o deck mesmo assim? As contas ficam sem carregar até o proxy voltar (o deck nunca abre as contas sem o proxy, com o seu IP real).",
+                    Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (answer != DialogResult.Yes)
+                {
+                    Close();
+                    return;
+                }
+            }
+        }
+
         // Configurações de extensão pedidas em "Trazer configurações…": só dá para gravar antes do navegador abrir.
         var imported = await Task.Run(() => StorageImport.ApplyPending(_root));
 
-        var options = new CoreWebView2EnvironmentOptions(BrowserArguments) { AreBrowserExtensionsEnabled = true };
+        var options = new CoreWebView2EnvironmentOptions(args) { AreBrowserExtensionsEnabled = true };
         _env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(_root, "WebView2"), options);
 
         // Conta desligada nem cria o navegador: só abre quando for ligada.
@@ -613,10 +661,12 @@ internal sealed class DeckForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _clock.Stop();
+        UpdateNet(); // fecha a conta do acumulado do proxy antes de salvar
         SaveWindowBounds();
         SaveConfig();
         for (int i = 0; i < Accounts; i++)
             CloseLives(i);
+        _proxyRelay?.Dispose();
         base.OnFormClosing(e);
     }
 
@@ -932,6 +982,7 @@ internal sealed class DeckForm : Form
                                                      && _lives[i]?.TwitchChannels.Any() == true))
             _ = TwitchPointsAsync();
         UpdateVotes();
+        UpdateNet();
     }
 
     /// <summary>
@@ -987,6 +1038,61 @@ internal sealed class DeckForm : Form
     }
 
     private static string Gb(long bytes) => (bytes / 1024d / 1024 / 1024).ToString("0.0");
+
+    /// <summary>Testa o proxy pelo relé do deck: o IP de saída, ou o motivo de não ter passado.</summary>
+    private static async Task<(bool Ok, string Detail)> CheckProxyAsync()
+    {
+        try
+        {
+            using var http = new HttpClient(Net.Handler()) { Timeout = TimeSpan.FromSeconds(20) };
+            var ip = (await http.GetStringAsync("https://api.ipify.org/?format=text")).Trim();
+            return (true, ip);
+        }
+        catch (Exception ex)
+        {
+            return (false, (ex.InnerException ?? ex).Message);
+        }
+    }
+
+    /// <summary>
+    /// O monitor do proxy residencial, uma vez por segundo: velocidade agora, total da sessão e, na dica, o acumulado,
+    /// o IP de saída e o consumo por destino. O acumulado fica no deck.json (a franquia do proxy dura mais que uma sessão).
+    /// </summary>
+    private void UpdateNet()
+    {
+        if (_proxyRelay is null)
+        {
+            if (!string.IsNullOrEmpty(_net.Text))
+                _net.Text = "";
+            return;
+        }
+
+        long down = _proxyRelay.DownBytes, up = _proxyRelay.UpBytes;
+        var now = Stopwatch.GetTimestamp();
+        double seconds = Math.Max(0.2, Stopwatch.GetElapsedTime(_netTick, now).TotalSeconds);
+        double downRate = (down - _netDown) / seconds, upRate = (up - _netUp) / seconds;
+        _config.Proxy.TotalBytes += (down - _netDown) + (up - _netUp);
+        (_netDown, _netUp, _netTick) = (down, up, now);
+
+        _net.Text = $"🛡 ↓ {Bytes(downRate)}/s · ↑ {Bytes(upRate)}/s · sessão {Bytes(down + up)}";
+        _net.ToolTipText =
+            $"Proxy residencial{(_proxyIp is null ? "" : $" (IP de saída {_proxyIp})")}\n" +
+            $"Sessão: ↓ {Bytes(down)} · ↑ {Bytes(up)}\n" +
+            $"Acumulado: {Bytes(_config.Proxy.TotalBytes)} (zere em 🛡 Proxy)\n\n" +
+            string.Join("\n", _proxyRelay.Usage().Where(u => u.Down + u.Up > 0).OrderByDescending(u => u.Down + u.Up)
+                .Select(u => $"{u.Name}: ↓ {Bytes(u.Down)} · ↑ {Bytes(u.Up)}")) +
+            "\n\nClique para abrir as configurações do proxy.";
+
+        if (_seconds % 60 == 0)
+            SaveConfig();
+    }
+
+    private static string Bytes(double bytes) => bytes switch
+    {
+        >= 1024d * 1024 * 1024 => (bytes / 1024 / 1024 / 1024).ToString("0.00") + " GB",
+        >= 1024d * 1024 => (bytes / 1024 / 1024).ToString("0.0") + " MB",
+        _ => (bytes / 1024).ToString("0") + " KB",
+    };
 
     /// <summary>O site da página onde o quadro está (sobe dos iframes até a página).</summary>
     private static string PageHost(CoreWebView2FrameInfo frame)
@@ -2049,6 +2155,26 @@ internal sealed class DeckForm : Form
             _config.Save(_configPath);
     }
 
+    /// <summary>A janela do proxy residencial. Mudar o proxy só vale no próximo deck aberto (o navegador nasce com ele).</summary>
+    private void OpenProxy()
+    {
+        using var dialog = new ProxyDialog(_config);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            SaveConfig();
+            ShowProxy();
+            MessageBox.Show(this,
+                "Proxy salvo. Ele vale a partir do próximo deck aberto (feche e abra o PokeIdle Deck).",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    private void ShowProxy()
+    {
+        _proxyButton.Text = _config.Proxy.Usable ? "🛡 Proxy ligado" : "🛡 Proxy";
+        _proxyButton.ForeColor = _config.Proxy.Usable ? Theme.Vote : Theme.Text;
+    }
+
     // ---------- Autoteste ----------
 
     private static string SelfTestReport => Path.Combine(Path.GetTempPath(), "PokeIdleDeck-selftest.txt");
@@ -2554,6 +2680,18 @@ internal sealed class DeckForm : Form
                     new Dictionary<string, bool?> { ["axt"] = false }, 3)
                     .SequenceEqual(new[] { "biscoitao", "clovao", "outro" })
                 && new DeckConfig().KickLives == 2);
+            Check("proxy: usável com endereço e porta (login é opcional); desligado ou incompleto não vale",
+                new ProxyConfig { Enabled = true, Host = "1.2.3.4", Port = 8080 }.Usable
+                && new ProxyConfig { Enabled = true, Host = "1.2.3.4", Port = 8080, User = "u", Password = "p" }.Usable
+                && !new ProxyConfig { Host = "1.2.3.4", Port = 8080 }.Usable
+                && !new ProxyConfig { Enabled = true, Port = 8080 }.Usable
+                && !new ProxyConfig { Enabled = true, Host = "1.2.3.4" }.Usable
+                && !new DeckConfig().Proxy.Usable);
+            Check("proxy: o monitor separa o tráfego por destino (jogo, Kick, Twitch, TopIdle, outros)",
+                ProxyRelay.Categorize("pokeidle.io") == ProxyRelay.Game && ProxyRelay.Categorize("player.kick.com") == ProxyRelay.Kick
+                && ProxyRelay.Categorize("a.playback.live-video.net") == ProxyRelay.Kick && ProxyRelay.Categorize("usher.ttvnw.net") == ProxyRelay.Twitch
+                && ProxyRelay.Categorize("www.twitch.tv") == ProxyRelay.Twitch && ProxyRelay.Categorize("topidle.com") == ProxyRelay.TopIdle
+                && ProxyRelay.Categorize("notkick.com") == ProxyRelay.Other);
             Check("Kick: resposta da API (no ar / offline)",
                 KickLive.ParseLive("{\"livestream\":null}") == false && KickLive.ParseLive("{\"livestream\":{\"is_live\":true}}") == true
                 && KickLive.ParseLive("{}") is null && KickLive.ParseLive("<html>") is null);

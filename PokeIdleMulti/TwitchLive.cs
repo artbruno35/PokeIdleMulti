@@ -19,7 +19,7 @@ internal static class TwitchLive
     // O Client-Id do próprio site da Twitch (está no código da página, é público).
     private const string ClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private static readonly HttpClient Http = new(Net.Handler()) { Timeout = TimeSpan.FromSeconds(15) };
 
     /// <summary>
     /// O player da live sozinho (o mesmo do "player em janela" do site). Ele entra com o login da Twitch do perfil

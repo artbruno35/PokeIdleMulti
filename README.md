@@ -130,6 +130,25 @@ O botão 🗳 de cada conta mostra quando o voto no TopIdle (que dá recompensa 
 falta para o próximo. Clicar abre a página de voto já com o nick da conta, no perfil dela. Você vota na
 página; o deck percebe quando o voto entra. A barra de baixo diz quais contas podem votar.
 
+### 🛡 Proxy residencial
+
+Um proxy para o deck todo: as 4 contas, as lives, o 💰 e os pedidos do próprio deck (checar lives, TopIdle) saem
+pelo **mesmo IP**. Clique em **🛡 Proxy** na barra de cima, ligue, ponha endereço, porta e (se o proxy tiver) login
+e senha, use **Testar** (mostra o IP de saída e se o pokeidle.io, a Kick e a Twitch abrem por ele) e **Salvar**.
+Mudar o proxy só vale na próxima vez que o deck abrir.
+
+- **Tipo:** proxy HTTP/HTTPS, com login e senha ou liberado por IP (login em branco). SOCKS5 não.
+- **Como funciona:** o Chromium não aceita login embutido, então o deck roda um relé local (127.0.0.1, porta 38211
+  ou a primeira livre) que repassa ao proxy com o login. Nada sai pelo seu IP real: o WebRTC e o QUIC/UDP ficam
+  desligados fora do proxy, e proxy errado não cai para a conexão direta.
+- **Confere ao abrir:** se o proxy não responder, o deck avisa antes de abrir as contas.
+- **Monitor de consumo** (barra de baixo, em tempo real): `🛡 ↓ velocidade · ↑ velocidade · sessão`. Passe o mouse
+  para ver o IP de saída, a sessão, o **acumulado** (fica salvo, para acompanhar a franquia do proxy; zere em
+  🛡 Proxy → Zerar contador) e o consumo por destino: Jogo, Kick, Twitch, TopIdle e Outros. Clicar abre o proxy.
+- **Proxy rotativo:** se o provedor troca o IP a cada conexão, o jogo, a Kick e a Twitch podem estranhar. Peça uma
+  sessão fixa (sticky), em geral um trecho no login, como `usuario-session-abc`.
+- **Franquia:** o vídeo das lives é o que mais gasta. Ele sai na menor qualidade, mas conta no proxy.
+
 ### 🧩 Extensões
 
 - Cada conta tem as próprias extensões: **Importar do meu Chrome…**, **Da Chrome Web Store…** (cole o link)
@@ -154,6 +173,7 @@ Quase tudo se configura pelas janelas do deck, e fica salvo sozinho em
 | **🛒** no cabeçalho | Recompra da conta: pokebola, revives, poções, ouro mínimo |
 | **⚡ ULTRA** (setinha) | ULTRA em todas as contas e o menos animações |
 | **− Zoom +** | Zoom de todas as contas |
+| **🛡 Proxy** | Proxy residencial do deck e o contador de consumo |
 | **🧩 Extensões** | Extensões de cada conta |
 
 A lista de fábrica da Twitch são os streamers oficiais do painel de bônus do jogo (outubro de 2026); confira
@@ -165,7 +185,7 @@ levar o deck para outro PC, copie essa pasta inteira (com o deck fechado) ou ent
 ## Pontos de atenção
 
 - **Não compartilhe a pasta `%LOCALAPPDATA%\PokeIdleMulti`**: ela tem os logins das suas contas (do jogo, da
-  Twitch e da Kick).
+  Twitch e da Kick) e a senha do proxy, em texto no `deck.json`.
 - **Uma conta do jogo em um lugar só.** Abrir a mesma conta no deck e no navegador derruba uma das duas.
 - **Conta parada na tela de login** vai juntando memória (o captcha do login se refaz sozinho). O cabeçalho
   avisa: entre na conta ou desligue no ⏻.
@@ -209,6 +229,7 @@ abre no monitor principal. Apague a pasta `selftest` antes de cada rodada.
 | `LivesWindow.cs`, `TwitchLive.cs`, `KickLive.cs`, `VideoQuality.cs`, `AdBlock.cs` | As lives da Twitch e da Kick |
 | `ConsumptionTest.cs` | O teste de consumo das lives (`PokeIdleMulti.exe --consumo`) |
 | `Restock.cs`, `RestockWindow.cs`, `recompra.js` | A recompra (o script roda na página do jogo) |
+| `ProxyRelay.cs`, `ProxyDialog.cs`, `Net.cs` | O proxy residencial: relé local, janela e os pedidos do deck pelo proxy |
 | `Echo.cs` | O eco de cliques |
 | `TopIdle.cs` | O voto no TopIdle |
 | `ExtensionStore.cs`, `ExtensionsDialog.cs`, `StorageImport.cs`, `RotomSniper.cs` | As extensões |
