@@ -16,7 +16,7 @@ internal static class KickLive
     /// <summary>O teto do campo (cada live custa uns 260 MB de RAM).</summary>
     public const int MaxSlots = 10;
 
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private static readonly HttpClient Http = new(Net.Handler()) { Timeout = TimeSpan.FromSeconds(15) };
 
     /// <summary>true = no ar, false = offline, null = não deu para saber agora.</summary>
     public static async Task<bool?> IsLiveAsync(string channel)

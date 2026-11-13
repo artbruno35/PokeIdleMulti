@@ -145,6 +145,9 @@ internal sealed class AccountPane : UserControl
     public int ExtensionButtonCount => _extensionItems.Count;
     public string? VoteText => _vote.Visible ? _voteText : null;
 
+    /// <summary>O deck está com o proxy ligado (muda a dica de quando uma página não carrega).</summary>
+    public static bool ViaProxy { get; set; }
+
     /// <summary>Cria o navegador da conta e abre o jogo; <paramref name="prepare"/> roda antes de abrir (o conserto das extensões).</summary>
     public async Task InitializeAsync(CoreWebView2Environment env, string url, double zoom, bool muted, Action<CoreWebView2>? setup,
         Func<CoreWebView2, Task>? prepare = null)
@@ -184,7 +187,7 @@ internal sealed class AccountPane : UserControl
             }
             else if (e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
             {
-                SetStatus(PaneStatus.Failed, "não carregou: sem internet ou o site caiu");
+                SetStatus(PaneStatus.Failed, ViaProxy ? "não carregou: o proxy, a internet ou o site" : "não carregou: sem internet ou o site caiu");
             }
         };
         core.ProcessFailed += (_, e) => OnProcessFailed(e);

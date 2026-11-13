@@ -25,7 +25,7 @@ internal static class TopIdle
     private static readonly Regex PlayerPattern = new("^[A-Za-z0-9_-]{1,64}$");
 
     // Os cookies vão à mão, os da conta certa em cada pedido.
-    private static readonly HttpClient Http = new(new HttpClientHandler { UseCookies = false })
+    private static readonly HttpClient Http = new(Net.Use(new HttpClientHandler { UseCookies = false }))
     {
         Timeout = TimeSpan.FromSeconds(15),
     };

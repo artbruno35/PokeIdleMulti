@@ -129,6 +129,9 @@ internal sealed class DeckConfig
     /// <summary>A recompra de pokebolas, revives e poções de cada conta (o carrinho no cabeçalho dela).</summary>
     public RestockConfig[] Restock { get; set; } = Enumerable.Range(0, Accounts).Select(_ => new RestockConfig()).ToArray();
 
+    /// <summary>O proxy residencial do deck (um só, para todas as contas e lives).</summary>
+    public ProxyConfig Proxy { get; set; } = new();
+
     /// <summary>Da versão em que o kick só fechava a 2ª live: lido uma vez e convertido em <see cref="Kick"/>.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool[]? KickSingle { get; set; }
@@ -176,6 +179,7 @@ internal sealed class DeckConfig
         config.RedeemKick = config.RedeemKick.Select(r => r is KickReward reward && !Enum.IsDefined(reward) ? PokeIdleMulti.KickReward.Xp : r).ToArray();
         config.RedeemTwitch = Fill(config.RedeemTwitch, _ => null)
             .Select(r => r is KickReward reward && !Enum.IsDefined(reward) ? PokeIdleMulti.KickReward.Xp : r).ToArray();
+        config.Proxy = config.Proxy?.Normalized() ?? new ProxyConfig();
         return config;
     }
 
@@ -196,6 +200,42 @@ internal sealed class DeckConfig
 
     private static T[] Fill<T>(T[]? values, Func<int, T> fallback) =>
         Enumerable.Range(0, Accounts).Select(i => values is not null && i < values.Length ? values[i] : fallback(i)).ToArray();
+}
+
+/// <summary>O proxy residencial do deck (um só, para todas as contas e lives).</summary>
+internal sealed class ProxyConfig
+{
+    public bool Enabled { get; set; }
+
+    /// <summary>O endereço do proxy (ex.: 74.81.81.81).</summary>
+    public string Host { get; set; } = "";
+
+    public int Port { get; set; }
+
+    /// <summary>
+    /// Login do proxy residencial (vazio se o proxy é liberado por IP). O Chromium não aceita login/senha embutidos,
+    /// então o deck repassa por um relé local.
+    /// </summary>
+    public string User { get; set; } = "";
+
+    public string Password { get; set; } = "";
+
+    /// <summary>Tudo que já passou pelo proxy, de uma vez para outra (download + upload), para acompanhar a franquia.</summary>
+    public long TotalBytes { get; set; }
+
+    /// <summary>Verdadeiro só quando dá para usar: ligado, com endereço e porta preenchidos.</summary>
+    [JsonIgnore]
+    public bool Usable => Enabled && !string.IsNullOrWhiteSpace(Host) && Port is > 0 and <= 65535;
+
+    public ProxyConfig Normalized() => new()
+    {
+        Enabled = Enabled,
+        Host = (Host ?? "").Trim(),
+        Port = Math.Clamp(Port, 0, 65535),
+        User = (User ?? "").Trim(),
+        Password = Password ?? "",
+        TotalBytes = Math.Max(0, TotalBytes),
+    };
 }
 
 /// <summary>As lives de um site (Kick ou Twitch) que o botão dele (kick ou twitch) fechou numa conta.</summary>
