@@ -28,7 +28,7 @@ internal sealed class LivesWindow : Form
     private readonly ToolStripButton _fullPage = new("Página inteira")
     {
         Alignment = ToolStripItemAlignment.Right, CheckOnClick = true, Visible = false,
-        ToolTipText = "Mostra a página toda da live (com o vídeo), se algo do chat ficar cortado",
+        ToolTipText = "Mostra a página toda da live (com o vídeo e o menu do site: entrar, sair da conta, tela cheia…)",
     };
     private readonly ToolStripButton _next = new("Próxima conta ▶") { Alignment = ToolStripItemAlignment.Right, Visible = false };
     private int _selected;
@@ -41,7 +41,8 @@ internal sealed class LivesWindow : Form
     private CoreWebView2Environment _env = null!;
     private string _profile = "";
     private Action<CoreWebView2>? _setup;
-    private Func<LiveSite, string, string> _chatUrl = (_, channel) => channel;
+    // O endereço da página do chat: site, canal e se é o site inteiro (só muda na Twitch; a da Kick já é o site).
+    private Func<LiveSite, string, bool, string> _chatUrl = (_, channel, _) => channel;
 
     // A página do canal da Kick é desenhada na largura de computador, que põe o chat numa lateral de 340 px à
     // direita com o botão dos pontos embaixo (na largura de celular esse botão some). Na coluna de cada live
@@ -100,6 +101,9 @@ internal sealed class LivesWindow : Form
         public WebView2? Chat { get; set; }
         public string? ChatChannel { get; set; }
         public bool ChatLoaded { get; set; }
+
+        /// <summary>Na Twitch, o chat está com o site inteiro do canal (com "Página inteira"), não o chat em janela.</summary>
+        public bool ChatFull { get; set; }
     }
 
     // Aceita o aviso de conteúdo adulto da Twitch (sem isso o vídeo nem começa), manda tocar se estiver pausado e
@@ -446,7 +450,7 @@ internal sealed class LivesWindow : Form
     /// de 05/11 (sem DRM e janela pequena fora da tela). Só o teste de consumo mexe neles, para comparar.
     /// </summary>
     public static Task<LivesWindow> CreateAsync(CoreWebView2Environment env, string profile, string accountName,
-        IEnumerable<string> urls, int twitchSlots, int kickSlots, Func<LiveSite, string, string> chatUrl, Action<CoreWebView2>? setup,
+        IEnumerable<string> urls, int twitchSlots, int kickSlots, Func<LiveSite, string, bool, string> chatUrl, Action<CoreWebView2>? setup,
         bool lean = true, bool cuts0511 = true)
     {
         var window = new LivesWindow(accountName)
@@ -792,7 +796,21 @@ internal sealed class LivesWindow : Form
     {
         page.ChatChannel = page.Channel;
         page.ChatLoaded = false;
-        page.Chat?.CoreWebView2?.Navigate(page.Channel is null || page.Site is not LiveSite site ? "about:blank" : _chatUrl(site, page.Channel));
+        page.ChatFull = WantsFullSite(page);
+        page.Chat?.CoreWebView2?.Navigate(page.Channel is null || page.Site is not LiveSite site ? "about:blank"
+            : _chatUrl(site, page.Channel, page.ChatFull));
+    }
+
+    // Na Twitch o chat é o chat em janela (leve); com "Página inteira", a aba mostrada abre o site inteiro do canal, com
+    // o menu do site (sair da conta, tela cheia…), como já é a página do canal da Kick. Desligar volta ao chat em janela.
+    private bool WantsFullSite(Page page) =>
+        page.Site == LiveSite.Twitch && _fullPage.Checked && _selected < _pages.Count && _pages[_selected] == page;
+
+    /// <summary>"Página inteira" ligada (autoteste).</summary>
+    public bool FullPage
+    {
+        get => _fullPage.Checked;
+        set => _fullPage.Checked = value;
     }
 
     private static void CloseChat(Page page)
@@ -900,6 +918,9 @@ internal sealed class LivesWindow : Form
         // Na tela, numa aba de live: abre as páginas do chat que faltam.
         if (_revealed && (columns || SelectedSite is not null))
             ShowChats();
+        // Os chats da Twitch já abertos trocam entre o chat em janela e o site inteiro (os que ainda abrem já vão certos).
+        foreach (var page in _pages.Where(p => p.Chat?.CoreWebView2 is not null && p.ChatFull != WantsFullSite(p)))
+            NavigateChat(page);
         if (CurrentChat != _chatApplied)
             ApplyChat();
     }
@@ -935,7 +956,7 @@ internal sealed class LivesWindow : Form
 
     /// <summary>
     /// Na Kick, a página do canal na largura de computador, encostada à direita da coluna: o chat aparece inteiro. Na
-    /// Twitch, o chat em janela, do tamanho da coluna.
+    /// Twitch, o chat em janela (ou, com "Página inteira", o site do canal), do tamanho da coluna.
     /// </summary>
     private void PlaceChat(Page page)
     {

@@ -2416,13 +2416,15 @@ internal sealed class DeckForm : Form
         _config.KickLight[index] ? KickUrl(channel) + (KickUrl(channel).Contains('?') ? "&" : "?") + TwitchLive.Still : KickUrl(channel);
 
     // A página do chat, com o botão dos pontos, que abre por cima do player só no 💰: na Kick a do canal, na Twitch o
-    // chat em janela (bem mais leve que a página do canal, e com o botão dos pontos e o baú).
-    private string ChatUrl(LiveSite site, string channel) => (site, _selfTest) switch
+    // chat em janela (bem mais leve que a página do canal, e com o botão dos pontos e o baú). Na Twitch, com "Página
+    // inteira" (full), o site do canal, com o menu da conta (sair, tela cheia…), como a da Kick.
+    private string ChatUrl(LiveSite site, string channel, bool full) => (site, _selfTest) switch
     {
         (LiveSite.Kick, true) => $"https://kick.test/kick.html?canal={Uri.EscapeDataString(channel)}&chat=1",
         (LiveSite.Kick, false) => $"https://kick.com/{channel}",
-        (_, true) => $"https://twitch.test/twitch.html?canal={Uri.EscapeDataString(channel)}&chat=1",
-        _ => $"https://www.twitch.tv/popout/{Uri.EscapeDataString(channel)}/chat?popout=",
+        (_, true) => $"https://twitch.test/twitch.html?canal={Uri.EscapeDataString(channel)}" + (full ? "&inteira=1" : "&chat=1"),
+        _ => full ? $"https://www.twitch.tv/{Uri.EscapeDataString(channel)}"
+            : $"https://www.twitch.tv/popout/{Uri.EscapeDataString(channel)}/chat?popout=",
     };
 
     private async Task OpenLivesAsync(int index)
@@ -4188,6 +4190,20 @@ internal sealed class DeckForm : Form
             await Task.Delay(300);
             var twitchChats = lives0 is null ? new List<string>() : await lives0.EvalChatsAsync("location.search");
             var twitchColumn = lives0?.ColumnsOf(LiveSite.Twitch).ToList() ?? new();
+            // "Página inteira" na Twitch: o chat vira o site inteiro do canal (com o menu da conta); desligar volta ao
+            // chat em janela.
+            var twitchFull = new List<string>();
+            if (lives0 is not null)
+            {
+                lives0.FullPage = true;
+                await WaitFor(() => lives0.ChatsLoaded == 1, 15);
+                twitchFull.AddRange(await lives0.EvalChatsAsync("location.search"));
+                lives0.FullPage = false;
+                await WaitFor(() => lives0.ChatsLoaded == 1, 15);
+                twitchFull.AddRange(await lives0.EvalChatsAsync("location.search"));
+            }
+            Check("Twitch: \"Página inteira\" abre o site do canal no lugar do chat em janela, e desligar volta",
+                twitchFull.SequenceEqual(new[] { "\"?canal=tftoddy&inteira=1\"", "\"?canal=tftoddy&chat=1\"" }), string.Join(",", twitchFull));
             lives0?.Close();
             await Task.Delay(300);
             Check("💰 Pontos da Twitch: abre o chat em janela de cada live da Twitch da conta, e fecha ao sair",

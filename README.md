@@ -192,8 +192,9 @@ endereços vão sem o `?…`.
   fechar devolve a memória, e o player continua rendendo. A altura da janela muda arrastando a borda, e o deck
   guarda. "Próxima conta ▶" passa para a conta seguinte; "Página inteira" mostra a página do canal toda.
 - **💰 Pontos da Twitch:** o mesmo, com o chat em janela de cada live da Twitch da conta (o botão dos pontos e o
-  baú ficam embaixo, ao lado do campo de mensagem). As mensagens ficam escondidas; "Página inteira" mostra
-  tudo.
+  baú ficam embaixo, ao lado do campo de mensagem). As mensagens ficam escondidas; "Página inteira" troca o
+  chat pelo site inteiro do canal, com o menu da conta (sair da Twitch, tela cheia…), como na Kick. Desligar
+  volta ao chat em janela.
 - **Registro dos resgates** (Lives → Registro dos resgates…): cada resgate, cada baú, cada recusa e cada vez que
   os pontos voltaram, com a hora, a conta, o site e o canal, o mais novo em cima. Fica em
   `%LOCALAPPDATA%\PokeIdleMulti\resgates.log`, de uma vez para outra.
