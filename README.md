@@ -5,7 +5,7 @@ Várias contas do [pokeidle.io](https://pokeidle.io/app) numa janela só, gastan
 O deck é um programa para Windows que abre 4 contas do jogo lado a lado. Cada uma roda num perfil próprio
 do navegador embutido (Microsoft Edge WebView2), com login, cookies e extensões separados, como se fossem 4
 navegadores diferentes. Por cima disso ele traz o que ajuda a caçar com várias contas: as lives da
-Twitch/Kick para o bônus de XP, a recompra automática de pokebolas, revives e poções, o voto no TopIdle, o
+Twitch/Kick para o bônus de XP, a recompra automática de pokebolas, revives e poções, o voto no IdleHub.io, o
 eco de cliques e o Modo ULTRA Economia em todas as contas de uma vez.
 
 > Projeto de fã, não oficial, sem ligação com o pokeidle.io. As automações usam os mesmos pedidos dos
@@ -49,7 +49,7 @@ configurações continuam, porque não ficam no exe.
 - **Layouts:** grade 2×2, colunas ou uma conta ampliada (as outras continuam rodando escondidas, no ritmo
   normal). **F11** é tela cheia; duplo clique no cabeçalho amplia ou volta.
 - **Cabeçalho de cada conta:** ⏻ desligar, ampliar, ⟳ recarregar, som, **kick** (lives da Kick da conta),
-  🛒 recompra, ⚔ fila de PvP, 🗳 voto no TopIdle e os botões das extensões. Ao lado do nome aparece há quanto tempo a conta
+  🛒 recompra, ⚔ fila de PvP, 🗳 voto no IdleHub.io e os botões das extensões. Ao lado do nome aparece há quanto tempo a conta
   está rodando e os avisos (por exemplo, "na tela de login"). Com as contas em colunas, o cabeçalho se aperta
   para nenhum botão sumir; se ainda faltar espaço, o ⚔ e o 🛒 desligados saem dele (os dois ficam no botão
   direito da conta, na barra de cima).
@@ -220,11 +220,15 @@ endereços vão sem o `?…`.
   aparelho ou programa, ou um resgate na mão), o registro diz quanto caiu. Se foi um resgate do deck cuja
   resposta se perdeu (o player não respondeu), o registro diz que ele passou.
 
-### 🗳 Voto no TopIdle
+### 🗳 Voto no IdleHub.io
 
-O botão 🗳 de cada conta mostra quando o voto no TopIdle (que dá recompensa no jogo) está liberado e quanto
-falta para o próximo. Clicar abre a página de voto já com o nick da conta, no perfil dela. Você vota na
-página; o deck percebe quando o voto entra. A barra de baixo diz quais contas podem votar.
+O botão 🗳 de cada conta mostra quando o voto no IdleHub.io (o "Vote & Ganhe" do jogo, que dá diamantes;
+substituiu o TopIdle em 11/2026) está liberado e quanto falta para o próximo. Quem diz isso é o próprio jogo,
+pela sessão da conta; a dica do botão mostra também os votos e quanto falta para o próximo 💎. Clicar (ou o
+botão de votar de dentro do jogo) abre a página de voto já com o nick da conta, no perfil dela: na primeira
+vez, entre no IdleHub com o Google ou o Discord. Você vota na página; o deck percebe quando o voto entra.
+Sem login no jogo, ou com o Vote & Ganhe desligado no servidor, o botão some. A barra de baixo diz quais
+contas podem votar.
 
 ### 🧩 Extensões
 
@@ -310,7 +314,7 @@ abre no monitor principal. Apague a pasta `selftest` antes de cada rodada.
 | `BonusGuard.cs`, `bonus.js` | A guarda do bônus das lives (o bonus.js lê no jogo o tempo que falta do bônus) |
 | `Diag.cs` | O 🩺 diagnóstico do jogo que não carrega (os logs por conta e o .zip para mandar) |
 | `Echo.cs` | O eco de cliques |
-| `TopIdle.cs` | O voto no TopIdle |
+| `IdleHub.cs` | O voto no IdleHub.io |
 | `ExtensionStore.cs`, `ExtensionsDialog.cs`, `StorageImport.cs`, `RotomSniper.cs` | As extensões |
 | `Theme.cs` | Cores e ícones |
 

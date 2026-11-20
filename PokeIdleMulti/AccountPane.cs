@@ -146,8 +146,8 @@ internal sealed class AccountPane : UserControl
     /// <summary>Desligada: fica no deck, mas sem o jogo (nem as extensões, que só rodam nele), lives ou voto.</summary>
     public bool Off { get; private set; }
 
-    /// <summary>A página do jogo abriu um link do TopIdle (o "votar" de dentro do jogo).</summary>
-    public event Action<AccountPane, string>? TopIdleLinkRequested;
+    /// <summary>A página do jogo abriu um link do IdleHub (o "Votar no IdleHub.io" de dentro do jogo).</summary>
+    public event Action<AccountPane, string>? VoteLinkRequested;
 
     public int Index { get; }
     public string ProfileName => $"conta{Index + 1}";
@@ -225,11 +225,11 @@ internal sealed class AccountPane : UserControl
         };
         core.NewWindowRequested += (_, e) =>
         {
-            if (TopIdleLinkRequested is not null && TopIdle.IsTopIdleLink(e.Uri))
+            if (VoteLinkRequested is not null && IdleHub.IsIdleHubLink(e.Uri))
             {
                 // O voto de dentro do jogo abre na janela de voto do deck, que percebe quando o voto entra.
                 e.Handled = true;
-                TopIdleLinkRequested(this, e.Uri);
+                VoteLinkRequested(this, e.Uri);
                 return;
             }
             PopupWindow.HandleNewWindow(env, ProfileName, FindForm(), e);
@@ -975,7 +975,7 @@ internal sealed class AccountPane : UserControl
             return null;
         try
         {
-            return TopIdle.ParseNick(await WebView.ExecuteScriptAsync("localStorage.getItem('nick')"));
+            return IdleHub.ParseNick(await WebView.ExecuteScriptAsync("localStorage.getItem('nick')"));
         }
         catch
         {

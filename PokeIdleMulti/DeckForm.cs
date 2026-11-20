@@ -85,13 +85,11 @@ internal sealed class DeckForm : Form
     private readonly DateTime[] _voteRefreshAt = new DateTime[Accounts];
     private readonly bool[] _voteBusy = new bool[Accounts];
     private readonly PopupWindow?[] _voteWindows = new PopupWindow?[Accounts];
+    private readonly DateTime[] _votedAt = new DateTime[Accounts];
     private readonly RestockWindow?[] _restockWindows = new RestockWindow?[Accounts];
     private readonly bool[] _restockBusy = new bool[Accounts];
     private readonly bool[] _pvpBusy = new bool[Accounts];
     private readonly BonusGuard _guard = new();
-    private string? _topIdleGameId;
-    private DateTime _topIdleRetryAt;
-    private bool _topIdleLookup;
     private readonly System.Windows.Forms.Timer _clock = new() { Interval = 1000 };
     private CoreWebView2Environment? _env;
     private DeckLayout _layoutBeforeFocus = DeckLayout.Grid;
@@ -187,7 +185,7 @@ internal sealed class DeckForm : Form
                     items.AddRange(LiveMenuItems(p.Index, site).ToArray());
                 }
             };
-            pane.TopIdleLinkRequested += (p, uri) => _ = OpenVoteAsync(p, uri);
+            pane.VoteLinkRequested += (p, uri) => _ = OpenVoteAsync(p, uri);
             _panes[i] = pane;
             _grid.Controls.Add(pane);
         }
@@ -2206,20 +2204,14 @@ internal sealed class DeckForm : Form
                 Text, DeckBoxIcon.Warn);
     }
 
-    // ---------- Voto no TopIdle ----------
+    // ---------- Voto no IdleHub ----------
 
-    /// <summary>A cada segundo: atualiza os botões de voto e confere no TopIdle as contas cuja hora chegou.</summary>
+    /// <summary>A cada segundo: atualiza os botões de voto e pergunta ao jogo das contas cuja hora chegou.</summary>
     private void UpdateVotes()
     {
         // O autoteste não sai para a internet; ele confere o voto por partes.
         if (_env is null || _selfTest)
             return;
-        if (_topIdleGameId is null)
-        {
-            if (!_topIdleLookup && DateTime.Now >= _topIdleRetryAt)
-                _ = FindTopIdleGameAsync();
-            return;
-        }
         for (int i = 0; i < Accounts; i++)
         {
             if (!_voteBusy[i] && DateTime.Now >= _voteRefreshAt[i] && _panes[i].Core is not null && !_panes[i].Off)
@@ -2229,40 +2221,40 @@ internal sealed class DeckForm : Form
         RenderVoteStatus();
     }
 
-    private async Task<string?> FindTopIdleGameAsync()
-    {
-        _topIdleLookup = true;
-        _topIdleRetryAt = DateTime.Now.AddMinutes(10);
-        try
-        {
-            _topIdleGameId = await TopIdle.FindGameIdAsync("pokeidle.io");
-        }
-        catch
-        {
-            // Sem internet ou TopIdle fora do ar: tenta de novo daqui a pouco.
-        }
-        finally
-        {
-            _topIdleLookup = false;
-        }
-        return _topIdleGameId;
-    }
+    // Acabou de votar: o aviso do IdleHub leva uns segundos para chegar ao jogo.
+    private bool JustVoted(int index) => DateTime.Now - _votedAt[index] < TimeSpan.FromMinutes(3);
 
     private async Task RefreshVoteAsync(int index)
     {
-        if (_topIdleGameId is not string gameId || _panes[index].Core is not CoreWebView2 core)
+        if (_panes[index].Core is not CoreWebView2 core)
             return;
         _voteBusy[index] = true;
         try
         {
-            var state = await TopIdle.GetStateAsync(core.CookieManager, gameId);
+            var ask = IdleHub.GetStateAsync(core);
+            if (await Task.WhenAny(ask, Task.Delay(TimeSpan.FromSeconds(30))) != ask)
+                throw new TimeoutException();
+            var state = await ask;
+            var now = DateTime.Now;
+            if (state is null)
+            {
+                // A página não está no jogo (carregando, recarregando) ou o jogo não respondeu: de novo logo.
+                _voteRefreshAt[index] = now.AddMinutes(1);
+                return;
+            }
+            if (state.Ready && JustVoted(index))
+            {
+                // O jogo ainda não recebeu o voto: segura o "votou" e pergunta de novo.
+                _voteRefreshAt[index] = now.AddSeconds(20);
+                return;
+            }
             _votes[index] = state;
-            // Confere de novo a cada 30 min, ou logo depois que o próximo voto liberar
-            // (já votou mas o TopIdle ainda não deu a hora do próximo: de novo em 2 min).
-            var next = DateTime.Now.AddMinutes(30);
-            if (state.LoggedIn && !state.CanVote)
-                next = state.NextVoteAt is not DateTime at ? DateTime.Now.AddMinutes(2)
-                    : at > DateTime.Now ? (at.AddSeconds(3) < next ? at.AddSeconds(3) : next) : DateTime.Now.AddMinutes(1);
+            // De novo a cada 30 min, ou logo depois que o próximo voto liberar; sem login no jogo, em 2 min.
+            var next = now.AddMinutes(30);
+            if (!state.LoggedIn)
+                next = now.AddMinutes(2);
+            else if (state.NextVoteAt is DateTime at && at > now && at.AddSeconds(3) < next)
+                next = at.AddSeconds(3);
             _voteRefreshAt[index] = next;
         }
         catch
@@ -2280,53 +2272,62 @@ internal sealed class DeckForm : Form
     private void RenderVote(int index)
     {
         var pane = _panes[index];
-        if (_topIdleGameId is null)
-        {
-            pane.HideVote();
-            return;
-        }
         var state = _votes[index];
-        if (state is null)
-            pane.SetVote("🗳 TopIdle", Theme.Muted, false, "Conferindo o voto desta conta no TopIdle…");
-        else if (!state.LoggedIn)
-            pane.SetVote("🗳 Votar", Theme.Text, false,
-                "Votar no pokeidle pelo TopIdle (o jogo dá recompensa por voto). Na primeira vez, entre no TopIdle " +
-                "com o Discord ou o Google na janela que abre: o login fica salvo nesta conta.");
+        // Sem login no jogo ou com o Vote & Ganhe desligado no servidor: o voto não daria nada.
+        if (state is { LoggedIn: false } or { Active: false })
+            pane.HideVote();
+        else if (JustVoted(index) && (state is null || state.Ready))
+            pane.SetVote("🗳 ✓ Votou", Theme.Muted, false, "Voto registrado no IdleHub.io. Conferindo no jogo quando libera o próximo…");
+        else if (state is null)
+            pane.SetVote("🗳 IdleHub", Theme.Muted, false, "Conferindo no jogo o voto desta conta no IdleHub.io…");
         else if (state.Ready)
             pane.SetVote("🗳 Votar", Theme.Vote, true,
-                $"Voto liberado no TopIdle ({state.User}). Clique para votar: quem vota é você, na página do TopIdle.");
-        else if (state.NextVoteAt is DateTime at)
-            pane.SetVote("🗳 " + FormatLeft(at - DateTime.Now), Theme.Muted, false,
-                $"Esta conta já votou. O próximo voto libera {FormatWhen(at)}.");
+                $"Voto liberado no IdleHub.io{(state.Nick is null ? "" : $" para {state.Nick}")}. Clique para votar: quem vota é você, " +
+                "na página do IdleHub (na primeira vez, entre com o Google ou o Discord: o login fica salvo nesta conta)." + VoteProgress(state));
         else
-            // Acabou de votar: o TopIdle ainda não disse quando libera o próximo.
-            pane.SetVote("🗳 ✓ Votou", Theme.Muted, false, "Esta conta já votou. Conferindo no TopIdle quando libera o próximo voto…");
+            pane.SetVote("🗳 " + FormatLeft(state.NextVoteAt!.Value - DateTime.Now), Theme.Muted, false,
+                $"Esta conta já votou. O próximo voto libera {FormatWhen(state.NextVoteAt.Value)}." + VoteProgress(state));
     }
 
-    /// <summary>A janela de voto viu o voto entrar: o botão vira "votou" e o TopIdle é consultado logo em seguida.</summary>
-    private void MarkVoted(int index)
+    /// <summary>O total de votos e quanto falta para o próximo diamante, como o painel do jogo mostra.</summary>
+    private static string VoteProgress(VoteState state)
     {
-        _votes[index] = (_votes[index] ?? new VoteState(true, true, null, null)) with { LoggedIn = true, CanVote = false, NextVoteAt = null };
-        _voteRefreshAt[index] = DateTime.Now.AddSeconds(2);
+        if (state.VotesPerReward <= 0)
+            return "";
+        int left = Math.Max(1, state.VotesPerReward - state.InPair);
+        return $"\n{state.Votes} votos · {(left == 1 ? "falta 1 voto" : $"faltam {left} votos")} para o próximo 💎 " +
+               $"({state.PerPair} 💎 a cada {state.VotesPerReward} votos)";
+    }
+
+    /// <summary>
+    /// A janela de voto viu o voto entrar: o botão vira "votou" (ou já conta o tempo, se o IdleHub disse quando libera)
+    /// e o jogo é consultado logo em seguida.
+    /// </summary>
+    private void MarkVoted(int index, DateTime? next)
+    {
+        _votedAt[index] = DateTime.Now;
+        if (_votes[index] is VoteState state && next is DateTime at && at > DateTime.Now)
+            _votes[index] = state with { NextVoteAt = at };
+        _voteRefreshAt[index] = DateTime.Now.AddSeconds(3);
         RenderVote(index);
         RenderVoteStatus();
     }
 
     private void RenderVoteStatus()
     {
-        if (_topIdleGameId is null)
+        var on = Enumerable.Range(0, Accounts).Where(i => !_panes[i].Off && _panes[i].VoteText is not null).ToList();
+        if (on.Count == 0)
         {
             _voteStatus.Text = "";
             return;
         }
-        var on = Enumerable.Range(0, Accounts).Where(i => !_panes[i].Off).ToList();
-        var ready = on.Where(i => _votes[i]?.Ready == true).Select(i => _config.AccountNames[i]).ToList();
-        var next = on.Select(i => _votes[i]).Where(v => v is { LoggedIn: true, Ready: false, NextVoteAt: not null }).Select(v => v!.NextVoteAt!.Value)
-            .DefaultIfEmpty().Min();
+        var ready = on.Where(i => _votes[i]?.Ready == true && !JustVoted(i)).Select(i => _config.AccountNames[i]).ToList();
+        var next = on.Select(i => _votes[i]).Where(v => v is { LoggedIn: true, Active: true, Ready: false, NextVoteAt: not null })
+            .Select(v => v!.NextVoteAt!.Value).DefaultIfEmpty().Min();
         _voteStatus.ForeColor = ready.Count > 0 ? Theme.Vote : Theme.Muted;
         _voteStatus.Text = ready.Count > 0 ? "🗳 Voto liberado: " + string.Join(", ", ready)
             : next > DateTime.Now ? "🗳 Próximo voto em " + FormatLeft(next - DateTime.Now)
-            : "🗳 Vote no TopIdle pelo botão de cada conta";
+            : "🗳 Vote no IdleHub pelo botão de cada conta";
     }
 
     private static string FormatLeft(TimeSpan left) =>
@@ -2336,8 +2337,8 @@ internal sealed class DeckForm : Form
         at.Date == DateTime.Today ? $"hoje às {at:HH:mm}" : at.Date == DateTime.Today.AddDays(1) ? $"amanhã às {at:HH:mm}" : $"em {at:dd/MM} às {at:HH:mm}";
 
     /// <summary>
-    /// Abre a página de voto do TopIdle no navegador da conta (onde fica o login do TopIdle dela), já com
-    /// o nick do personagem. Quem vota é você; o deck percebe o voto registrado e atualiza o botão.
+    /// Abre a página de voto do IdleHub no navegador da conta (onde fica o login do IdleHub dela), já com o nick do
+    /// personagem. Quem vota é você; o deck lê a resposta do voto e atualiza o botão.
     /// </summary>
     private async Task OpenVoteAsync(AccountPane pane, string? url)
     {
@@ -2353,34 +2354,38 @@ internal sealed class DeckForm : Form
             open.Activate();
             return;
         }
-
-        if ((_topIdleGameId ?? await FindTopIdleGameAsync()) is not string gameId)
-        {
-            DeckBox.Show(this, "Não consegui falar com o TopIdle agora.\n\nConfira a internet e tente de novo; as contas seguem rodando.",
-                Text, DeckBoxIcon.Warn);
-            return;
-        }
-        url ??= TopIdle.VoteUrl(gameId, await pane.ReadNickAsync());
+        // O link que o jogo deu (com o nick dele); sem ele, o nick salvo pelo jogo.
+        url ??= _votes[index]?.Url ?? IdleHub.VoteUrl(await pane.ReadNickAsync());
 
         var window = await PopupWindow.CreateAsync(_env, pane.ProfileName, new Size(1100, 820), closeOnDeactivate: false);
         var area = Screen.FromControl(this).WorkingArea;
         window.Location = new Point(area.X + Math.Max(0, (area.Width - window.Width) / 2), area.Y + Math.Max(0, (area.Height - window.Height) / 2));
-        string prefix = $"Votar com {pane.AccountName} · quem vota é você, nesta página do TopIdle";
+        string prefix = $"Votar com {pane.AccountName} · quem vota é você, nesta página do IdleHub.io";
         window.Text = prefix;
         var core = window.WebView.CoreWebView2;
         core.DocumentTitleChanged += (_, _) => window.Text = prefix;
-        core.WebResourceResponseReceived += (_, e) =>
+        core.WebResourceResponseReceived += async (_, e) =>
         {
-            var uri = e.Request.Uri;
-            if (TopIdle.IsVoteRegistered(e.Request.Method, uri, e.Response?.StatusCode ?? 0, gameId))
+            if (e.Response is null || !IdleHub.IsVoteResponse(e.Request.Method, e.Request.Uri, e.Response.StatusCode))
+                return;
+            string body;
+            try
+            {
+                using var stream = await e.Response.GetContentAsync();
+                if (stream is null)
+                    return;
+                using var reader = new StreamReader(stream);
+                body = await reader.ReadToEndAsync();
+            }
+            catch
+            {
+                return;
+            }
+            if (IdleHub.TryParseVoted(body, out var next) && !window.IsDisposed)
             {
                 prefix = $"✓ Voto registrado com {pane.AccountName}! Pode fechar esta janela";
                 window.Text = prefix;
-                MarkVoted(index);
-            }
-            else if (TopIdle.IsLoginChange(uri))
-            {
-                _voteRefreshAt[index] = DateTime.Now.AddSeconds(2);
+                MarkVoted(index, next);
             }
         };
         window.FormClosed += (_, _) =>
@@ -5288,31 +5293,49 @@ internal sealed class DeckForm : Form
             await Task.Delay(1000);
             Check("minimizar e restaurar com as contas vivas", alive == "2" && Shape(2, 2), Detail());
 
-            // Voto no TopIdle, por partes (o autoteste não sai para a internet).
+            // Voto no IdleHub, por partes (o autoteste não sai para a internet).
             Check("link de voto com o nick do personagem",
-                TopIdle.VoteUrl("pokeidle-io-5f9969", "fulano") == "https://topidle.com/jogo/pokeidle-io-5f9969?votar=1&playerIdentifier=fulano"
-                && TopIdle.VoteUrl("pokeidle-io-5f9969", "nick com espaço") == "https://topidle.com/jogo/pokeidle-io-5f9969?votar=1");
-            Check("nick lido do jogo", TopIdle.ParseNick("\"fulano\"") == "fulano"
-                && TopIdle.ParseNick("\"\\\"ciclano\\\"\"") == "ciclano" && TopIdle.ParseNick("null") is null);
+                IdleHub.VoteUrl("fulano") == "https://idlehub.io/votar/pokeidle-io?jogador=fulano"
+                && IdleHub.VoteUrl("nick com espaço") == "https://idlehub.io/votar/pokeidle-io" && IdleHub.VoteUrl(null) == "https://idlehub.io/votar/pokeidle-io");
+            Check("nick lido do jogo", IdleHub.ParseNick("\"fulano\"") == "fulano"
+                && IdleHub.ParseNick("\"\\\"ciclano\\\"\"") == "ciclano" && IdleHub.ParseNick("null") is null);
+            VoteState? ParseVote(string json)
+            {
+                using var doc = JsonDocument.Parse(json);
+                return IdleHub.ParseState(doc.RootElement);
+            }
+            var voteWaiting = ParseVote("""{"status":200,"nick":"fulano","dados":{"ativo":true,"esperaMs":7500000,"url":"https://idlehub.io/votar/pokeidle-io?jogador=fulano","identificador":"fulano","votos":7,"noPar":1,"porPar":1,"votosPorDiamante":2}}""");
+            var voteFree = ParseVote("""{"status":200,"nick":"fulano","dados":{"ativo":true,"esperaMs":0,"url":"https://outro.com/x","identificador":"beltrano","votos":0,"noPar":0,"porPar":1,"votosPorDiamante":2}}""");
+            Check("estado do voto lido do jogo (/idlehub/me)",
+                voteWaiting is { LoggedIn: true, Active: true, Ready: false, Votes: 7, InPair: 1, VotesPerReward: 2, Nick: "fulano" }
+                && voteWaiting.NextVoteAt > DateTime.Now.AddHours(2) && voteWaiting.Url == "https://idlehub.io/votar/pokeidle-io?jogador=fulano"
+                && voteFree is { Ready: true, Url: "https://idlehub.io/votar/pokeidle-io?jogador=beltrano" }
+                && ParseVote("""{"erro":"login"}""") is { LoggedIn: false } && ParseVote("""{"status":401,"dados":{"erro":"auth.precisaLogin"}}""") is { LoggedIn: false }
+                && ParseVote("""{"erro":"pagina"}""") is null && ParseVote("""{"status":500,"dados":null}""") is null
+                && ParseVote("""{"status":200,"dados":{"ativo":false,"esperaMs":0}}""") is { Active: false, Ready: false });
             Check("voto registrado é percebido",
-                TopIdle.IsVoteRegistered("POST", "https://topidle.com/api/games/pokeidle-io-5f9969/vote", 200, "pokeidle-io-5f9969")
-                && !TopIdle.IsVoteRegistered("POST", "https://topidle.com/api/games/pokeidle-io-5f9969/vote", 429, "pokeidle-io-5f9969")
-                && !TopIdle.IsVoteRegistered("GET", "https://topidle.com/api/games/pokeidle-io-5f9969/vote", 200, "pokeidle-io-5f9969")
-                && !TopIdle.IsVoteRegistered("POST", "https://outro.com/api/games/pokeidle-io-5f9969/vote", 200, "pokeidle-io-5f9969"));
-            _topIdleGameId = "pokeidle-io-5f9969";
-            _votes[0] = new VoteState(true, false, DateTime.Now.AddHours(2).AddMinutes(5).AddSeconds(30), "teste");
-            _votes[1] = new VoteState(true, true, null, "teste");
-            _votes[2] = new VoteState(false, true, null, null);
+                IdleHub.IsVoteResponse("POST", "https://idlehub.io/jogo/pokeidle-io/votar", 200)
+                && !IdleHub.IsVoteResponse("POST", "https://idlehub.io/api/auth/sair", 200)
+                && !IdleHub.IsVoteResponse("GET", "https://idlehub.io/jogo/pokeidle-io", 200)
+                && !IdleHub.IsVoteResponse("POST", "https://outro.com/jogo/pokeidle-io/votar", 200)
+                && IdleHub.TryParseVoted("""{"ok":true,"votosMes":10,"proximoEm":1795274052000}""", out var votedNext) && votedNext?.Year == 2026
+                && !IdleHub.TryParseVoted("""{"ok":false,"erro":"x"}""", out _) && !IdleHub.TryParseVoted("<html>", out _));
+            _votes[0] = new VoteState(true, true, DateTime.Now.AddHours(2).AddMinutes(5).AddSeconds(30), null, "teste", 7, 1, 1, 2);
+            _votes[1] = new VoteState(true, true, null, null, "teste");
+            _votes[2] = new VoteState(false, false, null, null, null);
             for (int i = 0; i < Accounts; i++)
                 RenderVote(i);
             RenderVoteStatus();
             Check("botões de voto nos cabeçalhos",
-                _panes[0].VoteText == "🗳 2 h 05 min" && _panes[1].VoteText == "🗳 Votar" && _panes[2].VoteText == "🗳 Votar"
-                && _panes[3].VoteText == "🗳 TopIdle" && _voteStatus.Text == "🗳 Voto liberado: Conta 2",
+                _panes[0].VoteText == "🗳 2 h 05 min" && _panes[1].VoteText == "🗳 Votar" && _panes[2].VoteText is null
+                && _panes[3].VoteText == "🗳 IdleHub" && _voteStatus.Text == "🗳 Voto liberado: Conta 2",
                 string.Join(" | ", _panes.Select(p => p.VoteText)) + " | " + _voteStatus.Text);
-            MarkVoted(1);
+            MarkVoted(1, null);
             Check("depois de votar o botão vira 'votou' (sem erro)", _panes[1].VoteText == "🗳 ✓ Votou" && _voteStatus.Text?.StartsWith("🗳 Próximo voto em") == true,
                 _panes[1].VoteText + " | " + _voteStatus.Text);
+            MarkVoted(1, DateTime.Now.AddHours(23).AddMinutes(59).AddSeconds(30));
+            Check("com a hora do IdleHub o 'votou' já conta o tempo", _panes[1].VoteText == "🗳 23 h 59 min", _panes[1].VoteText);
+            _votedAt[1] = default;
 
             // O cabeçalho da conta 1 (com extensão, kick, carrinho e voto) na grade e em colunas, a mais apertada:
             // a imagem para conferir o tamanho dos botões, e o que não coube.
@@ -5347,15 +5370,11 @@ internal sealed class DeckForm : Form
                 $"cortados na grade='{cut[DeckLayout.Grid]}' em colunas='{cut[DeckLayout.Columns]}' (imagem em {headerPicture})");
             try
             {
-                Check("TopIdle acha o pokeidle (precisa de internet)",
-                    await TopIdle.FindGameIdAsync("pokeidle.io") == "pokeidle-io-5f9969");
-                var anonymous = await TopIdle.GetStateAsync(_panes[3].Core!.CookieManager, "pokeidle-io-5f9969");
-                Check("conta sem login no TopIdle aparece como 'Votar' (precisa de internet)", !anonymous.LoggedIn);
                 Check("Kick responde se a live está no ar (precisa de internet)", await KickLive.IsLiveAsync("biscoitao") is not null);
             }
             catch (Exception ex)
             {
-                Check("TopIdle respondeu (precisa de internet)", false, ex.Message);
+                Check("Kick respondeu (precisa de internet)", false, ex.Message);
             }
 
             const string master =
